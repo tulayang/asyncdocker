@@ -121,6 +121,7 @@
 ##
 ##   proc cb(req: Request) {.async.} =
 ##     var docker = newAsyncDocker("127.0.0.1", 2375)
+##     var pass = true
 ##     try:
 ##       var ret = await docker.create(image = "ubuntu:14.04", 
 ##                                     name = "hello",
@@ -130,6 +131,8 @@
 ##       await docker.start(name = "hello")
 ##       await req.respond(Http201, "OK")
 ##     except:
+##       pass = false
+##     if not pass:
 ##       await req.respond(Http500, "Failure")
 ##     docker.close()
 ##
@@ -144,6 +147,7 @@
 ##   routes:
 ##     post "/containers/@name/run"
 ##       var docker = newAsyncDocker("127.0.0.1", 2375)
+##       var pass = true
 ##       try:
 ##         var ret = await docker.create(image = "ubuntu:14.04", 
 ##                                       name = @"name",
@@ -153,6 +157,8 @@
 ##         await docker.start(name = "hello")
 ##         await req.respond(Http201, "OK")
 ##       except:
+##         pass = false
+##       if not pass:
 ##         await req.respond(Http500, "Failure")
 ##       docker.close()
 ##
