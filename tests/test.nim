@@ -152,7 +152,7 @@ proc main() {.async.} =
   echo imageInfo["RepoTags"][0]
   assert imageInfo["RepoTags"][0].getStr() == "ubuntu:14.10" 
 
-  discard await docker.history(name = "ubuntu:14.04")
+  discard await docker.history(name = "ubuntu:14.10")
 
   await docker.tag(name = "ubuntu:14.10", repo = "asyncdocker/ubuntu", tag = "1.0")
 
