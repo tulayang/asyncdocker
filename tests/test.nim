@@ -213,7 +213,6 @@ proc main() {.async.} =
   assert execInfo["ID"].getStr() == exec["Id"].getStr()
 
   var volumes = await docker.volumes()
-  assert volumes["Volumes"].len() > 0
 
   var volume = await docker.createVolume(name = "newvolume", driver = "local")
 
