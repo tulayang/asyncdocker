@@ -27,7 +27,7 @@ And the equivalent asyncdocker example:
   import asyncdocker, asyncdispatch, json
 
   proc main() {.async.} = 
-    var docker = newAsyncDocker("127.0.0.1", 2375)
+    var docker = newAsyncDocker("127.0.0.1", Port(2375))
     var ret = await docker.create(image = "ubuntu:14.04", 
                                   name = "hello",
                                   hostname = "192.168.0.1",
