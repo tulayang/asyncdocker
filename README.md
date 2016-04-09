@@ -117,7 +117,7 @@ You can write a web service with ``asynchttpserver``:
   var server = newAsyncHttpServer()
 
   proc cb(req: Request) {.async.} =
-    var docker = newAsyncDocker("127.0.0.1", 2375)
+    var docker = newAsyncDocker("127.0.0.1", Port(2375))
     var pass = true
     try:
       var ret = await docker.create(image = "ubuntu:14.04", 
@@ -143,7 +143,7 @@ or with ``jester``:
 
   routes:
     post "/containers/@name/run"
-      var docker = newAsyncDocker("127.0.0.1", 2375)
+      var docker = newAsyncDocker("127.0.0.1", Port(2375))
       var pass = true
       try:
         var ret = await docker.create(image = "ubuntu:14.04", 
@@ -214,7 +214,7 @@ equivalent to:
     cert = "/home/docker/.docker/cert.pem"
   
   proc main() {.async.}
-    var docker = newAsyncDocker("127.0.0.1", 2376, nil, key, cert, CVerifyNone)
+    var docker = newAsyncDocker("127.0.0.1", Port(2376), nil, key, cert, CVerifyNone)
     var containers = await docker.ps()
 
   waitFor main()
@@ -242,7 +242,7 @@ equivalent to:
     cert = "/home/docker/.docker/cert.pem"
   
   proc main() {.async.}
-    var docker = newAsyncDocker("127.0.0.1", 2376, cacert, key, cert, CVerifyPeer)
+    var docker = newAsyncDocker("127.0.0.1", Port(2376), cacert, key, cert, CVerifyPeer)
     var containers = await docker.ps()
 
   waitFor main()
