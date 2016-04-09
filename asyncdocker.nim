@@ -30,7 +30,7 @@
 ##   import asyncdocker, asyncdispatch, json
 ##
 ##   proc main() {.async.} = 
-##     var docker = newAsyncDocker("127.0.0.1", 2375)
+##     var docker = newAsyncDocker("127.0.0.1", Port(2375))
 ##     var ret = await docker.create(image = "ubuntu:14.04", 
 ##                                   name = "hello",
 ##                                   hostname = "192.168.0.1",
@@ -120,7 +120,7 @@
 ##   var server = newAsyncHttpServer()
 ##
 ##   proc cb(req: Request) {.async.} =
-##     var docker = newAsyncDocker("127.0.0.1", 2375)
+##     var docker = newAsyncDocker("127.0.0.1", Port(2375))
 ##     var pass = true
 ##     try:
 ##       var ret = await docker.create(image = "ubuntu:14.04", 
@@ -146,7 +146,7 @@
 ##
 ##   routes:
 ##     post "/containers/@name/run"
-##       var docker = newAsyncDocker("127.0.0.1", 2375)
+##       var docker = newAsyncDocker("127.0.0.1", Port(2375))
 ##       var pass = true
 ##       try:
 ##         var ret = await docker.create(image = "ubuntu:14.04", 
@@ -215,7 +215,7 @@
 ##     cert = "/home/docker/.docker/cert.pem"
 ##   
 ##   proc main() {.async.}
-##     var docker = newAsyncDocker("127.0.0.1", 2376, nil, key, cert, CVerifyNone)
+##     var docker = newAsyncDocker("127.0.0.1", Port(2376), nil, key, cert, CVerifyNone)
 ##     var containers = await docker.ps()  
 ##
 ##   waitFor main()
@@ -243,7 +243,7 @@
 ##     cert = "/home/docker/.docker/cert.pem"
 ##   
 ##   proc main() {.async.}
-##     var docker = newAsyncDocker("127.0.0.1", 2376, cacert, key, cert, CVerifyPeer)
+##     var docker = newAsyncDocker("127.0.0.1", Port(2376), cacert, key, cert, CVerifyPeer)
 ##     var containers = await docker.ps()
 ##
 ##   waitFor main()
