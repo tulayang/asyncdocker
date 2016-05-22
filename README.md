@@ -52,34 +52,34 @@ const
   hostname = "127.0.0.1"
   port = Port(2375)
 
+proc pullCb(state: JsonNode): Future[bool] {.async.} = 
+  if state.hasKey("progress"):
+    let current = state["progressDetail"]["current"].getNum()
+    let total = state["progressDetail"]["total"].getNum()
+    stdout.write("\r")
+    stdout.write(state["id"].getStr())
+    stdout.write(": ")
+    stdout.write(state["status"].getStr())
+    stdout.write(" ")
+    stdout.write($current & "/" & $total)
+    stdout.write(" ")
+    stdout.write(state["progress"].getStr())
+    if current == total:
+      stdout.write("\n")
+    stdout.flushFile()
+  else:
+    if state.hasKey("id"):
+      stdout.write(state["id"].getStr())
+      stdout.write(": ")
+      stdout.write(state["status"].getStr())
+      stdout.write("\n")
+    else: 
+      stdout.write(state["status"].getStr())
+      stdout.write("\n")
+
 proc main() {.async.} =
   var docker = newAsyncDocker(hostname, port)
-  await docker.pull(fromImage = "ubuntu", tag = "14.10",
-                    cb = proc(state: JsonNode): bool = 
-                      if state.hasKey("progress"):
-                        let current = state["progressDetail"]["current"].getNum()
-                        let total = state["progressDetail"]["total"].getNum()
-                        stdout.write("\r")
-                        stdout.write(state["id"].getStr())
-                        stdout.write(": ")
-                        stdout.write(state["status"].getStr())
-                        stdout.write(" ")
-                        stdout.write($current & "/" & $total)
-                        stdout.write(" ")
-                        stdout.write(state["progress"].getStr())
-                        if current == total:
-                          stdout.write("\n")
-                        stdout.flushFile()
-                      else:
-                        if state.hasKey("id"):
-                          stdout.write(state["id"].getStr())
-                          stdout.write(": ")
-                          stdout.write(state["status"].getStr())
-                          stdout.write("\n")
-                        else: 
-                          stdout.write(state["status"].getStr())
-                          stdout.write("\n"))
-                      
+  await docker.pull(fromImage = "ubuntu", tag = "14.10", cb = pullCb)          
   docker.close()
 
 waitFor main()
@@ -173,15 +173,20 @@ docker logs --follow hello
 equivalent to:
 
 ```nim
+proc logsCb(): proc(stream: int, log: string): Future[bool] = 
   var i = 0
-  await docker.logs("hello", follow = true, 
-                    cb = proc(stream: int, log: string) = 
-                      if stream == 1:
-                        stdout.write("stdout: " & log)
-                      if stream == 2:
-                        stderr.write("stderr: " & log)
-                      inc(i))
-  echo "recv " & i & " logs"
+  proc cb(stream: int, log: string): Future[bool] {.async.} = 
+    if stream == 1:
+      stdout.write("stdout: " & log)
+    if stream == 2:
+      stderr.write("stderr: " & log)
+    echo i
+    if i == 5:
+     result = true # Close socket to stop receiving logs.
+    inc(i)
+  result = cb
+
+await docker.logs("hello", follow = true, cb = logsCb())
 ```
 
 TLS Verify

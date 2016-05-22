@@ -4,42 +4,120 @@ const
   hostname = "127.0.0.1"
   port = Port(2375)
 
+proc logsCb(): proc(stream: int, log: string): Future[bool] = 
+  var i = 0
+  proc cb(stream: int, log: string): Future[bool] {.async.} = 
+    if stream == 1:
+      stdout.write("stdout: " & log)
+    if stream == 2:
+      stderr.write("stderr: " & log)
+    echo i
+    if i == 5:
+     result = true # Close socket to stop receiving logs.
+    inc(i)
+  result = cb
+
+proc exportContainerCb(): proc(data: string): Future[bool] = 
+  var j = 1
+  proc cb(data: string): Future[bool] {.async.} = 
+    echo data
+    if j == 10:
+      result = true # Close socket to stop receiving datas.
+    inc(j)
+  result = cb
+
+proc statsCb(): proc(data: JsonNode): Future[bool] = 
+  var n = 1
+  proc cb(data: JsonNode): Future[bool] {.async.} = 
+    echo $data & "\n"
+    if n == 2:
+      result = true # Close socket to stop receiving datas.
+    inc(n)
+  result = cb
+
+proc attachCb(): proc(stream: int, payload: string): Future[bool] = 
+  var m = 1
+  proc cb(stream: int, payload: string): Future[bool] {.async.} = 
+    if stream == 1:
+      stdout.write("stdout: " & payload)
+    if stream == 2:
+      stderr.write("stderr: " & payload)
+    if m == 5:
+      result = true # Close socket to stop receiving payloads.
+    inc(m)
+  result = cb
+
+proc getArchiveCb(chunk: string): Future[bool] {.async.} = 
+  echo chunk
+
+proc buildCb(state: JsonNode): Future[bool] {.async.} = 
+  stdout.write(state["stream"].getStr())
+
+proc eventsCb(): proc(event: JsonNode): Future[bool] = 
+  var o = 1
+  proc cb(event: JsonNode): Future[bool] {.async.} = 
+    echo $event & "\n"
+    if o == 2:
+      result = true
+    inc(o)
+  result = cb
+
+proc getCb(): proc(data: string): Future[bool] = 
+  var a = 1
+  proc cb(data: string): Future[bool] {.async.} = 
+    echo data
+    if a == 5:
+      result = true
+    inc(a)
+  result = cb
+
+proc getsCb(): proc(data: string): Future[bool] =
+  var b = 1
+  proc getsCb(data: string): Future[bool] {.async.} = 
+    echo data
+    if b == 5:
+      result = true
+    inc(b)
+
+proc execStartCb(data: string): Future[bool] {.async.} = 
+  echo "Date: ", data
+
 proc main() {.async.} =
   var docker = newAsyncDocker(hostname, port)
 
   echo "\n==================== Pull Image ====================\n"
-  await docker.pull(fromImage = "ubuntu", tag = "14.10", 
-                    cb = proc(state: JsonNode): bool = 
-                      if state.hasKey("progress"):
-                        let current = state["progressDetail"]["current"].getNum()
-                        let total = state["progressDetail"]["total"].getNum()
-                        stdout.write("\r")
-                        stdout.write(state["id"].getStr())
-                        stdout.write(": ")
-                        stdout.write(state["status"].getStr())
-                        stdout.write(" ")
-                        stdout.write($current & "/" & $total)
-                        stdout.write(" ")
-                        stdout.write(state["progress"].getStr())
-                        if current == total:
-                          stdout.write("\n")
-                        stdout.flushFile()
-                      else:
-                        if state.hasKey("id"):
-                          stdout.write(state["id"].getStr())
-                          stdout.write(": ")
-                          stdout.write(state["status"].getStr())
-                          stdout.write("\n")
-                        else: 
-                          stdout.write(state["status"].getStr())
-                          stdout.write("\n"))
+  proc pullCb(state: JsonNode): Future[bool] {.async.} = 
+    if state.hasKey("progress"):
+      let current = state["progressDetail"]["current"].getNum()
+      let total = state["progressDetail"]["total"].getNum()
+      stdout.write("\r")
+      stdout.write(state["id"].getStr())
+      stdout.write(": ")
+      stdout.write(state["status"].getStr())
+      stdout.write(" ")
+      stdout.write($current & "/" & $total)
+      stdout.write(" ")
+      stdout.write(state["progress"].getStr())
+      if current == total:
+        stdout.write("\n")
+      stdout.flushFile()
+    else:
+      if state.hasKey("id"):
+        stdout.write(state["id"].getStr())
+        stdout.write(": ")
+        stdout.write(state["status"].getStr())
+        stdout.write("\n")
+      else: 
+        stdout.write(state["status"].getStr())
+        stdout.write("\n")
+  await docker.pull(fromImage = "ubuntu", tag = "14.04", cb = pullCb)
 
   echo "\n=================== Ps Container ===================\n"
   var containers = await docker.ps(all = true, limit = 2, labelFilters = @["purpose=test"],
                                    statusFilters = @[statRunning, statCreated, statExited])
   echo containers
 
-  var hello = await docker.create(image = "ubuntu:14.10",
+  var hello = await docker.create(image = "ubuntu:14.04",
                                   cmd = @["/bin/bash", "-c", "while true; do echo hello world; sleep 1; done"],
                                   name = "hello",
                                   labels = @[("purpose", "test")],
@@ -69,34 +147,14 @@ proc main() {.async.} =
   echo "\n====================================================\n"
 
   echo "\n================== Logs Container ==================\n"
-  var i = 1
-  await docker.logs("hello", follow = true, 
-                    cb = proc(stream: int, log: string): bool = 
-                      if stream == 1:
-                        stdout.write("stdout: " & log)
-                      if stream == 2:
-                        stderr.write("stderr: " & log)
-                      if i == 5:
-                        result = true # Close socket to stop receiving logs.
-                      inc(i))
+  
+  await docker.logs("hello", follow = true, cb = logsCb())
 
   echo "\n================= Export Container =================\n"
-  var j = 1
-  await docker.exportContainer(name = "hello", 
-                               cb = proc(data: string): bool = 
-                                 echo data
-                                 if j == 10:
-                                   result = true # Close socket to stop receiving datas.
-                                 inc(j))
+  await docker.exportContainer(name = "hello", cb = exportContainerCb())
 
   echo "\n================== Stats Container =================\n"
-  var n = 1
-  await docker.stats(name = "hello", stream = true,
-                     cb = proc(data: JsonNode): bool = 
-                       echo $data & "\n"
-                       if n == 2:
-                         result = true # Close socket to stop receiving datas.
-                       inc(n))
+  await docker.stats(name = "hello", stream = true, cb = statsCb())
 
   discard await docker.changes("hello")
 
@@ -116,24 +174,14 @@ proc main() {.async.} =
   await docker.rename(name = "newhello", newname = "hello")
 
   echo "\n================= Attach Container =================\n"
-  var m = 1
-  await docker.attach("hello", stream = true, stdout = true,
-                      cb = proc(stream: int, payload: string): bool = 
-                      if stream == 1:
-                        stdout.write("stdout: " & payload)
-                      if stream == 2:
-                        stderr.write("stderr: " & payload)
-                      if m == 5:
-                        result = true # Close socket to stop receiving payloads.
-                      inc(m))
+  await docker.attach("hello", stream = true, stdout = true, cb = attachCb())
 
   echo "\n================= Retrieve Archive =================\n"
   var archive = await docker.retrieveArchive(name = "hello", path = "/home")
   echo archive
 
   echo "\n==================== Get Archive ===================\n"
-  echo await docker.getArchive(name = "hello", path = "/home",
-                               cb = proc(chunk: string): bool = echo chunk)
+  echo await docker.getArchive(name = "hello", path = "/home", cb = getArchiveCb)
 
   await docker.putArchive(name = "hello", path = "/home",
                           archive = $(readFile(joinPath(getAppDir(), "put_archive.tar.gz"))))
@@ -145,16 +193,15 @@ proc main() {.async.} =
   echo "\n======================== Build =======================\n"
   await docker.build($readFile(joinPath(getAppDir(), "build.tar.gz")),
                      dockerfile = "Dockerfile",
-                     cb = proc(state: JsonNode): bool = 
-                       stdout.write(state["stream"].getStr()))
+                     cb = buildCb)
 
-  var imageInfo = await docker.inspectImage(name = "ubuntu:14.10")
+  var imageInfo = await docker.inspectImage(name = "ubuntu:14.04")
   echo imageInfo["RepoTags"][0]
-  assert imageInfo["RepoTags"][0].getStr() == "ubuntu:14.10" 
+  assert imageInfo["RepoTags"][0].getStr() == "ubuntu:14.04" 
 
-  discard await docker.history(name = "ubuntu:14.10")
+  discard await docker.history(name = "ubuntu:14.04")
 
-  await docker.tag(name = "ubuntu:14.10", repo = "asyncdocker/ubuntu", tag = "1.0")
+  await docker.tag(name = "ubuntu:14.04", repo = "asyncdocker/ubuntu", tag = "1.0")
 
   discard await docker.rmImage(name = "asyncdocker/ubuntu:1.0")
 
@@ -177,37 +224,25 @@ proc main() {.async.} =
   assert commit["Id"].getStr().len() > 0
 
   echo "\n======================== Events =======================\n"
-  var o = 1
-  await docker.events(cb = proc(event: JsonNode): bool = 
-    echo $event & "\n"
-    if o == 2:
-      result = true
-    inc(o))
+  
+  await docker.events(cb = eventsCb())
 
   echo "\n============== Get Tarball From Image =================\n"
-  var a = 1
-  await docker.get(name = "ubuntu:14.10", cb = proc(data: string): bool = 
-    echo data
-    if a == 5:
-      result = true
-    inc(a))
+  
+  await docker.get(name = "ubuntu:14.04", cb = getCb())
 
   echo "\n============== Get Tarball From Images ================\n"
-  var b = 1
-  await docker.get(names = @["ubuntu:14.10"], cb = proc(data: string): bool = 
-    echo data
-    if b == 5:
-      result = true
-    inc(b))
+  
+  await docker.get(names = @["ubuntu:14.04"], cb = getsCb())
 
   echo "\n================== Exec Container =====================\n"
   var exec = await docker.execCreate(name = "hello", attachStdin = false, attachStdout = true,
                                      attachStderr = false, tty = false, cmd = @["date"])
+  
   await docker.execStart(name = getStr(exec["Id"]), tty = true, 
-                         cb = proc(data: string): bool = 
-                           echo "Date: ", data)
+                         cb = execStartCb)
 
-  await docker.execResize(name = exec["Id"].getStr(), width = 100, height =200)
+  #await docker.execResize(name = exec["Id"].getStr(), width = 100, height =200)
 
   var execInfo = await docker.execInspect(name = exec["Id"].getStr())
   assert execInfo["ID"].getStr() == exec["Id"].getStr()

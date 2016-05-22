@@ -55,34 +55,34 @@
 ##     hostname = "127.0.0.1"
 ##     port = Port(2375)
 ##
+##   proc pullCb(state: JsonNode): Future[bool] {.async.} = 
+##     if state.hasKey("progress"):
+##       let current = state["progressDetail"]["current"].getNum()
+##       let total = state["progressDetail"]["total"].getNum()
+##       stdout.write("\r")
+##       stdout.write(state["id"].getStr())
+##       stdout.write(": ")
+##       stdout.write(state["status"].getStr())
+##       stdout.write(" ")
+##       stdout.write($current & "/" & $total)
+##       stdout.write(" ")
+##       stdout.write(state["progress"].getStr())
+##       if current == total:
+##         stdout.write("\n")
+##       stdout.flushFile()
+##     else:
+##       if state.hasKey("id"):
+##         stdout.write(state["id"].getStr())
+##         stdout.write(": ")
+##         stdout.write(state["status"].getStr())
+##         stdout.write("\n")
+##       else: 
+##         stdout.write(state["status"].getStr())
+##         stdout.write("\n")
+##
 ##   proc main() {.async.} =
 ##     var docker = newAsyncDocker(hostname, port)
-##     await docker.pull(fromImage = "ubuntu", tag = "14.10",
-##                       cb = proc(state: JsonNode): bool = 
-##                         if state.hasKey("progress"):
-##                           let current = state["progressDetail"]["current"].getNum()
-##                           let total = state["progressDetail"]["total"].getNum()
-##                           stdout.write("\r")
-##                           stdout.write(state["id"].getStr())
-##                           stdout.write(": ")
-##                           stdout.write(state["status"].getStr())
-##                           stdout.write(" ")
-##                           stdout.write($current & "/" & $total)
-##                           stdout.write(" ")
-##                           stdout.write(state["progress"].getStr())
-##                           if current == total:
-##                             stdout.write("\n")
-##                           stdout.flushFile()
-##                         else:
-##                           if state.hasKey("id"):
-##                             stdout.write(state["id"].getStr())
-##                             stdout.write(": ")
-##                             stdout.write(state["status"].getStr())
-##                             stdout.write("\n")
-##                           else: 
-##                             stdout.write(state["status"].getStr())
-##                             stdout.write("\n"))
-##                      
+##     await docker.pull(fromImage = "ubuntu", tag = "14.04", cb = pullCb)          
 ##     docker.close()
 ##
 ##   waitFor main()
@@ -91,7 +91,7 @@
 ##
 ## .. code-block:: nim
 ##
-##   14.10: Pulling from library/ubuntu
+##   14.04: Pulling from library/ubuntu
 ##   b0efe5c05b4c: Pulling fs layer
 ##   0a1f1b169319: Pulling fs layer
 ##   1ceb0a3c7c48: Pulling fs layer
@@ -174,15 +174,20 @@
 ##
 ## .. code-block:: nim
 ##
-##   var i = 0
-##   await docker.logs("hello", follow = true, 
-##                     cb = proc(stream: int, log: string) = 
-##                       if stream == 1:
-##                         stdout.write("stdout: " & log)
-##                       if stream == 2:
-##                         stderr.write("stderr: " & log)
-##                       inc(i))
-##   echo "recv " & i & " logs"
+##   proc logsCb(): proc(stream: int, log: string): Future[bool] = 
+##     var i = 0
+##     proc cb(stream: int, log: string): Future[bool] {.async.} = 
+##       if stream == 1:
+##         stdout.write("stdout: " & log)
+##       if stream == 2:
+##         stderr.write("stderr: " & log)
+##       echo i
+##       if i == 5:
+##        result = true ##   Close socket to stop receiving logs.
+##       inc(i)
+##     result = cb
+
+##   await docker.logs("hello", follow = true, cb = logsCb())
 ## 
 ## Tls verify
 ## ==========
@@ -295,8 +300,8 @@ type
   ServerError* = object of DockerError        ## `Server error` from docker daemon,
                                               ## response status code is `500`.
 const 
-  dockerVersion* = "1.22"
-  userAgent* = "Nim Docker client/0.0.1 (1.22)"
+  dockerVersion* = "1.23"
+  userAgent* = "Nim Docker client/0.0.1 (1.23)"
 
 proc add(queries: var seq[string]; name, val: string) =
   add(queries, name & "=" & val)
@@ -406,7 +411,7 @@ proc ps*(c: AsyncDocker,
          exitedFilters: seq[int] = nil, 
          statusFilters: seq[ContainerStatus] = nil, 
          labelFilters: seq[string] = nil): Future[JsonNode] {.async.} =
-  ## List containers. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#list-containers>`_
+  ## List containers. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#list-containers>`_
   ##
   ## ``FutureError`` represents an exception, it may be ``BadParameterError``, ``ServerError``
   ## or ``DockerError``.  
@@ -581,7 +586,7 @@ proc create*(c: AsyncDocker;
              devices: seq[tuple[pathOnHost, pathInContainer, cgroupPermissions: string]] = nil;
              logConfig: tuple[typ: LogType, config: seq[tuple[key, value: string]]] = (logJsonFile, nil)
              ): Future[JsonNode] {.async.} =
-  ## Create a container. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#create-a-container>`_
+  ## Create a container. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#create-a-container>`_
   ##  
   ## ``FutureError`` represents an exception, it may be ``NotFoundError``, ``NotAcceptableError``, 
   ## ``ServerError`` or ``DockerError``.
@@ -900,7 +905,7 @@ proc create*(c: AsyncDocker;
     raise newException(DockerError, res.body)
 
 proc inspect*(c: AsyncDocker, name: string, size = false): Future[JsonNode] {.async.} =
-  ## Return low-level information on the container `name` (name or id). see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#inspect-a-container>`_
+  ## Return low-level information on the container `name` (name or id). see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#inspect-a-container>`_
   ##
   ## ``FutureError`` represents an exception, it may be ``NotFoundError``, ``ServerError`` 
   ## or ``DockerError``.   
@@ -1082,7 +1087,7 @@ proc inspect*(c: AsyncDocker, name: string, size = false): Future[JsonNode] {.as
     raise newException(DockerError, res.body)
 
 proc top*(c: AsyncDocker, name: string, psArgs = "-ef"): Future[JsonNode] {.async.} =
-  ## List processes running inside the container `name` (name or id). see `Docker Reference<https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#list-processes-running-inside-a-container>`_
+  ## List processes running inside the container `name` (name or id). see `Docker Reference<https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#list-processes-running-inside-a-container>`_
   ##
   ## ``FutureError`` represents an exception, it may be ``NotFoundError``, 
   ## ``ServerError`` or `DockerError`.   
@@ -1137,7 +1142,7 @@ proc logs*(c: AsyncDocker; name: string;
            stdout = true; stderr, follow, timestamps = false; 
            since = 0; tail = "all", cb: proc(stream: int, log: string): Future[bool]) {.async.} =
   ## Get `stdout` and `stderr` logs from the container `name` (name or id).
-  ## see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#get-container-logs>`_
+  ## see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#get-container-logs>`_
   ##
   ## Note: This endpoint works only for containers with the json-file or 
   ## journald logging drivers. 
@@ -1213,7 +1218,7 @@ proc logs*(c: AsyncDocker; name: string;
     raise newException(DockerError, res.body)
 
 proc changes*(c: AsyncDocker, name: string): Future[JsonNode] {.async.} =
-  ## Inspect changes on container’s filesystem. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#inspect-changes-on-a-container-s-filesystem>`_
+  ## Inspect changes on container’s filesystem. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#inspect-changes-on-a-container-s-filesystem>`_
   ## 
   ## ``FutureError`` represents an exception, it may be ``NotFoundError``, 
   ## ``ServerError`` or `DockerError`.   
@@ -1264,7 +1269,7 @@ proc changes*(c: AsyncDocker, name: string): Future[JsonNode] {.async.} =
 
 proc exportContainer*(c: AsyncDocker, name: string,
                       cb: proc(data: string): Future[bool]) {.async.} =
-  ## Export the contents of container `name` (name or id). see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#export-a-container>`_
+  ## Export the contents of container `name` (name or id). see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#export-a-container>`_
   ##
   ## ``FutureError`` represents an exception, it may be ``NotFoundError``, 
   ## ``ServerError`` or `DockerError`. 
@@ -1290,7 +1295,7 @@ proc stats*(c: AsyncDocker, name: string, stream = false,
             cb: proc(stat: JsonNode): Future[bool]) {.async.} =
   ## Returns a live the container’s resource usage statistics.
   ## Note: this functionality currently only works when using the libcontainer 
-  ## exec-driver. Note: not support stream mode currently. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#get-container-stats-based-on-resource-usage>`_
+  ## exec-driver. Note: not support stream mode currently. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#get-container-stats-based-on-resource-usage>`_
   ## 
   ## ``FutureError`` represents an exception, it may be ``NotFoundError``, 
   ## ``ServerError`` or ``DockerError``.   
@@ -1418,7 +1423,7 @@ proc stats*(c: AsyncDocker, name: string, stream = false,
 
 proc resize*(c: AsyncDocker, name: string, width: int, height: int)  {.async.} =
   ## Resize the TTY for container with `name` (name or id). The unit is number of characters. 
-  ## You must restart the container for the resize to take effect. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#resize-a-container-tty>`_
+  ## You must restart the container for the resize to take effect. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#resize-a-container-tty>`_
   ##
   ## ``FutureError`` represents an exception, it may be ``NotFoundError``, ``ServerError`` 
   ## or ``DockerError``.   
@@ -1445,7 +1450,7 @@ proc resize*(c: AsyncDocker, name: string, width: int, height: int)  {.async.} =
     raise newException(DockerError, res.body)
 
 proc start*(c: AsyncDocker, name: string, detachKeys: string = nil) {.async.} =
-  ## Start the container `name` (name or id). see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#start-a-container>`_
+  ## Start the container `name` (name or id). see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#start-a-container>`_
   ##
   ## ``FutureError`` represents an exception, it may be ``NotFoundError``, ``ServerError`` 
   ## or ``DockerError``.   
@@ -1473,7 +1478,7 @@ proc start*(c: AsyncDocker, name: string, detachKeys: string = nil) {.async.} =
     raise newException(DockerError, res.body)
 
 proc stop*(c: AsyncDocker, name: string, time = 10) {.async.} =
-  ## Stop the container `name` (name or id). see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#stop-a-container>`_
+  ## Stop the container `name` (name or id). see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#stop-a-container>`_
   ## 
   ## ``FutureError`` represents an exception, it may be ``NotFoundError``, ``ServerError`` 
   ## or ``DockerError``.   
@@ -1498,7 +1503,7 @@ proc stop*(c: AsyncDocker, name: string, time = 10) {.async.} =
     raise newException(DockerError, res.body)
 
 proc restart*(c: AsyncDocker, name: string, time = 10) {.async.} =
-  ## Restart the container `name` (name or id). see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#restart-a-container>`_
+  ## Restart the container `name` (name or id). see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#restart-a-container>`_
   ## 
   ## ``FutureError`` represents an exception, it may be ``NotFoundError``, ``ServerError`` 
   ## or ``DockerError``.   
@@ -1524,7 +1529,7 @@ proc restart*(c: AsyncDocker, name: string, time = 10) {.async.} =
     raise newException(DockerError, res.body)
 
 proc kill*(c: AsyncDocker, name: string, signal = "SIGKILL") {.async.} =
-  ## Kill the container `name` (name or id). see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#kill-a-container>`_
+  ## Kill the container `name` (name or id). see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#kill-a-container>`_
   ## 
   ## ``FutureError`` represents an exception, it may be ``NotFoundError``, ``ServerError`` 
   ## or ``DockerError``.   
@@ -1554,7 +1559,7 @@ proc update*(c: AsyncDocker; name: string;
              blkioWeight, cpuShares, cpuPeriod, cpuQuota = 0;
              cpusetCpus, cpusetMems = "";
              memory, memorySwap, memoryReservation, kernelMemory = 0): Future[JsonNode] {.async.} =
-  ## Update resource configs of one or more containers. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#update-a-container>`_
+  ## Update resource configs of one or more containers. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#update-a-container>`_
   ##
   ## `FutureError`` represents an exception, it may be ``BadParameterError``, ``NotFoundError``, 
   ## ``ServerError`` or `DockerError`.  
@@ -1608,7 +1613,7 @@ proc update*(c: AsyncDocker; name: string;
     raise newException(DockerError, res.body)
 
 proc rename*(c: AsyncDocker, name: string, newname: string) {.async.} =
-  ## Rename the container `name` to `newname`. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#rename-a-container>`_
+  ## Rename the container `name` to `newname`. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#rename-a-container>`_
   ##
   ## `FutureError`` represents an exception, it may be ``NotFoundError``, ``ConflictError``, 
   ## ``ServerError`` or `DockerError`.  
@@ -1635,7 +1640,7 @@ proc rename*(c: AsyncDocker, name: string, newname: string) {.async.} =
     raise newException(DockerError, res.body)
 
 proc pause*(c: AsyncDocker, name: string) {.async.} =
-  ## Pause the container `name`. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#pause-a-container>`_
+  ## Pause the container `name`. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#pause-a-container>`_
   ##
   ## ``FutureError`` represents an exception, it may be ``NotFoundError``, ``ServerError`` 
   ## or `DockerError`.   
@@ -1657,7 +1662,7 @@ proc pause*(c: AsyncDocker, name: string) {.async.} =
     raise newException(DockerError, res.body)
 
 proc unpause*(c: AsyncDocker, name: string) {.async.} =
-  ## Unpause the container `name`. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#unpause-a-container>`_
+  ## Unpause the container `name`. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#unpause-a-container>`_
   ##
   ## ``FutureError`` represents an exception, it may be ``NotFoundError``, ``ServerError`` 
   ## or `DockerError`.   
@@ -1681,7 +1686,7 @@ proc unpause*(c: AsyncDocker, name: string) {.async.} =
 proc attach*(c: AsyncDocker; name: string; detachKeys: string = nil;
              logs, stream, stdin, stdout, stderr = false;
              cb: proc(stream: int, data: string): Future[bool]) {.async.} =
-  ## Attach to the container `name`. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#attach-to-a-container>`_ 
+  ## Attach to the container `name`. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#attach-to-a-container>`_ 
   ##
   ## ``FutureError`` represents an exception, it may be `BadParameterError`, 
   ## ``NotFoundError``, ``ServerError`` or `DockerError`.   
@@ -1725,7 +1730,7 @@ proc attach*(c: AsyncDocker; name: string; detachKeys: string = nil;
     raise newException(DockerError, res.body)
  
 proc wait*(c: AsyncDocker, name: string): Future[JsonNode] {.async.} =
-  ## Waiting for container `name` stops, then returns the exit code. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#wait-a-container>`_
+  ## Waiting for container `name` stops, then returns the exit code. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#wait-a-container>`_
   ##
   ## ``FutureError`` represents an exception, it may be ``NotFoundError``, ``ServerError`` 
   ## or `DockerError`.   
@@ -1757,7 +1762,7 @@ proc wait*(c: AsyncDocker, name: string): Future[JsonNode] {.async.} =
     raise newException(DockerError, res.body)
 
 proc rm*(c: AsyncDocker, name: string, volumes = false, force = false) {.async.} =
-  ## Remove the container `name` from the filesystem. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#remove-a-container>`_
+  ## Remove the container `name` from the filesystem. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#remove-a-container>`_
   ##
   ## ``FutureError`` represents an exception, it may be `BadParameterError`, 
   ## ``NotFoundError``, ``ServerError`` or `DockerError`.   
@@ -1788,7 +1793,7 @@ proc rm*(c: AsyncDocker, name: string, volumes = false, force = false) {.async.}
     raise newException(DockerError, res.body)
 
 proc retrieveArchive*(c: AsyncDocker, name: string, path: string): Future[JsonNode] {.async.} =  
-  ## Retrieving information about files and folders in the container `name`. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#retrieving-information-about-files-and-folders-in-a-container`_
+  ## Retrieving information about files and folders in the container `name`. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#retrieving-information-about-files-and-folders-in-a-container`_
   ## 
   ## ``FutureError`` represents an exception, it may be ``NotFoundError``, ``BadParameterError``, 
   ## ``ServerError`` or `DockerError`.   
@@ -1840,7 +1845,7 @@ proc retrieveArchive*(c: AsyncDocker, name: string, path: string): Future[JsonNo
 
 proc getArchive*(c: AsyncDocker, name: string, path: string,
                  cb: proc(archive: string): Future[bool]): Future[JsonNode] {.async.} =  
-  ## Get an tar archive of a resource in the filesystem of container `name`. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#get-an-archive-of-a-filesystem-resource-in-a-container`_
+  ## Get an tar archive of a resource in the filesystem of container `name`. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#get-an-archive-of-a-filesystem-resource-in-a-container`_
   ## 
   ## ``FutureError`` represents an exception, it may be ``NotFoundError``, ``BadParameterError``, 
   ## ``ServerError`` or `DockerError`.   
@@ -1898,7 +1903,7 @@ proc getArchive*(c: AsyncDocker, name: string, path: string,
 
 proc putArchive*(c: AsyncDocker, name: string, path: string, archive: string,
                  noOverwriteDirNonDir = false) {.async.} =  
-  ## Upload a tar archive to be extracted to a path in the filesystem of container `name`. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#extract-an-archive-of-files-or-folders-to-a-directory-in-a-container`_
+  ## Upload a tar archive to be extracted to a path in the filesystem of container `name`. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#extract-an-archive-of-files-or-folders-to-a-directory-in-a-container`_
   ## 
   ## ``FutureError`` represents an exception, it may be ``NotFoundError``, ``BadParameterError``, 
   ## ``ServerError`` or `DockerError`.   
@@ -1958,7 +1963,7 @@ proc putArchive*(c: AsyncDocker, name: string, path: string, archive: string,
 proc images*(c: AsyncDocker; all, digests = false; 
              danglingFilters = false; labelFilters: seq[string] = nil;
              filter: string = nil): Future[JsonNode] {.async.} =
-  ## List Images. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#list-images>`_
+  ## List Images. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#list-images>`_
   ##
   ## ``FutureError`` represents an exception, it may be ``DockerError``. 
   ##
@@ -2042,7 +2047,7 @@ proc build*(c: AsyncDocker; tarball: string;
             buildargs: seq[tuple[key: string, value: string]] = nil; 
             registryAuth: seq[tuple[url, username, password: string]] = nil;
             cb: proc(state: JsonNode): Future[bool] = nil) {.async.} =
-  ## Build an image from a Dockerfile. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#build-image-from-a-dockerfile>`_
+  ## Build an image from a Dockerfile. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#build-image-from-a-dockerfile>`_
   ##
   ## ``FutureError`` represents an exception, it may be ``ServerError`` or ``DockerError``.
   ##
@@ -2140,7 +2145,7 @@ proc pull*(c: AsyncDocker; fromImage: string;
            fromSrc, repo, tag: string = nil;
            registryAuth: tuple[username, password, email: string] = (nil, nil, nil);
            cb: proc(state: JsonNode): Future[bool]) {.async.} =
-  ## Create an image either by pulling it from the registry or by importing it. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#create-an-image>`_
+  ## Create an image either by pulling it from the registry or by importing it. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#create-an-image>`_
   ##
   ## ``FutureError`` represents an exception, it may be ``ServerError``
   ## or `DockerError`.   
@@ -2188,7 +2193,7 @@ proc pull*(c: AsyncDocker; fromImage: string;
     raise newException(DockerError, res.body)
 
 proc inspectImage*(c: AsyncDocker, name: string): Future[JsonNode] {.async.} =
-  ## Return low-level information on the image `name`. see `Docker Reference<https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#inspect-an-image>`_
+  ## Return low-level information on the image `name`. see `Docker Reference<https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#inspect-an-image>`_
   ##
   ## ## ``FutureError`` represents an exception, it may be ``NotFoundError``,
   ## ``ServerError`` or `DockerError`.   
@@ -2307,7 +2312,7 @@ proc inspectImage*(c: AsyncDocker, name: string): Future[JsonNode] {.async.} =
     raise newException(DockerError, res.body)
 
 proc history*(c: AsyncDocker, name: string): Future[JsonNode] {.async.} =
-  ## Return the history of the image `name`. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#get-the-history-of-an-image>`_
+  ## Return the history of the image `name`. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#get-the-history-of-an-image>`_
   ##    
   ## ``FutureError`` represents an exception, it may be ``NotFoundError``, ``ServerError`` 
   ## or `DockerError`.   
@@ -2371,7 +2376,7 @@ proc history*(c: AsyncDocker, name: string): Future[JsonNode] {.async.} =
 proc push*(c: AsyncDocker, name: string, tag: string = nil,
            registryAuth: tuple[username, password, email: string] = (nil, nil, nil),
            cb: proc(state: JsonNode): Future[bool]) {.async.} =
-  ## Push the image `name` on the registry. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#push-an-image-on-the-registry>`_
+  ## Push the image `name` on the registry. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#push-an-image-on-the-registry>`_
   ##
   ## If you wish to push an image on to a private registry, that image must already
   ## have a tag into a repository which references that registry hostname and port.
@@ -2424,7 +2429,7 @@ proc push*(c: AsyncDocker, name: string, tag: string = nil,
     raise newException(DockerError, res.body)
 
 proc tag*(c: AsyncDocker; name, repo, tag: string; force = false) {.async.} =
-  ## Tag the image `name` into a repository. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#tag-an-image-into-a-repository>`_
+  ## Tag the image `name` into a repository. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#tag-an-image-into-a-repository>`_
   ##
   ## ``FutureError`` represents an exception, it may be `BadParameterError`, 
   ## ``NotFoundError``, ``ServerError``, `ConflictError`or `DockerError`.   
@@ -2458,7 +2463,7 @@ proc tag*(c: AsyncDocker; name, repo, tag: string; force = false) {.async.} =
 
 proc rmImage*(c: AsyncDocker, name: string,
               force, noprune = false): Future[JsonNode] {.async.} =
-  ## Remove the image `name` from the filesystem. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#remove-an-image>`_
+  ## Remove the image `name` from the filesystem. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#remove-an-image>`_
   ##
   ## ``FutureError`` represents an exception, it may be ``NotFoundError``, 
   ## `ConflictError`, ``ServerError`` or `DockerError`. 
@@ -2502,7 +2507,7 @@ proc rmImage*(c: AsyncDocker, name: string,
     raise newException(DockerError, res.body)
 
 proc search*(c: AsyncDocker, name: string): Future[JsonNode] {.async.} =
-  ## Search for an image on Docker Hub. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#search-images>`_
+  ## Search for an image on Docker Hub. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#search-images>`_
   ##
   ## ``FutureError`` represents an exception, it may be ``ServerError``, 
   ## or `DockerError`.    
@@ -2557,7 +2562,7 @@ proc search*(c: AsyncDocker, name: string): Future[JsonNode] {.async.} =
 
 proc auth*(c: AsyncDocker; username, password: string;
            email, serveraddress: string): Future[JsonNode] {.async.} =
-  ## Check auth configuration. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#check-auth-configuration>`_
+  ## Check auth configuration. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#check-auth-configuration>`_
   ## 
   ## ``FutureError`` represents an exception, it may be ``ServerError``, 
   ## or `DockerError`.
@@ -2582,7 +2587,7 @@ proc auth*(c: AsyncDocker; username, password: string;
     raise newException(DockerError, res.body)
 
 proc info*(c: AsyncDocker): Future[JsonNode] {.async.} =
-  ## Display system-wide information. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#display-system-wide-information>`_
+  ## Display system-wide information. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#display-system-wide-information>`_
   ##
   ## ``FutureError`` represents an exception, it may be ``ServerError`` or `DockerError`.  
   ##
@@ -2654,7 +2659,7 @@ proc info*(c: AsyncDocker): Future[JsonNode] {.async.} =
     raise newException(DockerError, res.body)
 
 proc version*(c: AsyncDocker): Future[JsonNode] {.async.} =
-  ## Display system-wide information. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#show-the-docker-version-information>`_
+  ## Display system-wide information. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#show-the-docker-version-information>`_
   ##
   ## ``FutureError`` represents an exception, it may be ``ServerError`` or `DockerError`.  
   ##
@@ -2686,7 +2691,7 @@ proc version*(c: AsyncDocker): Future[JsonNode] {.async.} =
     raise newException(DockerError, res.body)
 
 proc ping*(c: AsyncDocker): Future[string] {.async.} =
-  ## Ping the docker server. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#ping-the-docker-server>`_
+  ## Ping the docker server. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#ping-the-docker-server>`_
   ##
   ## ``FutureError`` represents an exception, it may be ``ServerError`` or `DockerError`.  
   ##
@@ -2716,7 +2721,7 @@ proc commit*(c: AsyncDocker; container: string;
              labels: seq[tuple[key, value: string]] = nil;
              workingDir = "";
              networkDisabled = false): Future[JsonNode] {.async.} =
-  ## Create a new image from a container’s changes. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#create-a-new-image-from-a-container-s-changes>`_
+  ## Create a new image from a container’s changes. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#create-a-new-image-from-a-container-s-changes>`_
   ##
   ## ``FutureError`` represents an exception, it may be ``NotFoundError``,
   ## ``ServerError`` or `DockerError`.   
@@ -2793,7 +2798,7 @@ proc events*(c: AsyncDocker; since, until = 0;
              filters: seq[tuple[key, value: string]] = nil;
              cb: proc(event: JsonNode): Future[bool]) {.async.} =
   ## Get container events from docker, either in real time via streaming, or 
-  ## via polling (using since). see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#monitor-docker-s-events>`_
+  ## via polling (using since). see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#monitor-docker-s-events>`_
   ##
   ## ``FutureError`` represents an exception, it may be ``ServerError`` 
   ## or `DockerError`.
@@ -2846,7 +2851,7 @@ proc events*(c: AsyncDocker; since, until = 0;
 
 proc get*(c: AsyncDocker, name: string, cb: proc(data: string): Future[bool]) {.async.} =
   ## Get a tarball containing all images and metadata for the repository
-  ## specified by `name`. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#get-a-tarball-containing-all-images-in-a-repository>`_
+  ## specified by `name`. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#get-a-tarball-containing-all-images-in-a-repository>`_
   ##
   ## If name is a specific name and tag (e.g. ubuntu:latest), then only 
   ## that image (and its parents) are returned. If name is an image ID, 
@@ -2872,7 +2877,7 @@ proc get*(c: AsyncDocker, name: string, cb: proc(data: string): Future[bool]) {.
 
 proc get*(c: AsyncDocker, names: seq[string], cb: proc(data: string): Future[bool]) {.async.} =
   ## Get a tarball containing all images and metadata for one or more repositories.
-  ## see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#get-a-tarball-containing-all-images>`_
+  ## see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#get-a-tarball-containing-all-images>`_
   ##
   ## For each value of the ``names`` parameter: if it is a specific name and tag
   ## (e.g. `ubuntu:latest`), then only that image (and its parents) are returned;
@@ -2901,7 +2906,7 @@ proc get*(c: AsyncDocker, names: seq[string], cb: proc(data: string): Future[boo
 
 proc load(c: AsyncDocker, tarball: string) {.async.} =
   # TODO: ...
-  ## Load a set of images and tags into a Docker repository. see `DOcker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#load-a-tarball-with-a-set-of-images-and-tags-into-docker>`_
+  ## Load a set of images and tags into a Docker repository. see `DOcker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#load-a-tarball-with-a-set-of-images-and-tags-into-docker>`_
   ##
   ## ``FutureError`` represents an exception, it may be ``ServerError`` 
   ## or `DockerError`.  
@@ -2919,7 +2924,7 @@ proc execCreate*(c: AsyncDocker; name: string;
                  attachStdin, attachStdout, attachStderr, tty = false;
                  detachKeys = "";
                  cmd: seq[string] = nil): Future[JsonNode] {.async.} =
-  ## Sets up an exec instance in a running container `name`. see `Docker Reference <ttps://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#exec-create>`_
+  ## Sets up an exec instance in a running container `name`. see `Docker Reference <ttps://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#exec-create>`_
   ##
   ## ``FutureError`` represents an exception, it may be ``NotFoundError``, ``ConflictError``
   ## ``ServerError`` or `DockerError`.   
@@ -2975,7 +2980,7 @@ proc execStart*(c: AsyncDocker; name: string;
                 cb: proc(data: string): Future[bool]) {.async.} =
   ## Starts a previously set up `exec` instance `name`. If detach is true, this
   ## API returns after starting the `exec` command. Otherwise, this API sets
-  ## up an interactive session with the `exec` command. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#exec-start>`_
+  ## up an interactive session with the `exec` command. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#exec-start>`_
   ##
   ## ``FutureError`` represents an exception, it may be ``NotFoundError``,
   ## `ConflictError` or `DockerError`.    
@@ -3005,7 +3010,7 @@ proc execStart*(c: AsyncDocker; name: string;
 proc execResize*(c: AsyncDocker; name: string; width, height: int) {.async.} =
   ## Resizes the `tty` session used by the `exec` command id. The unit
   ## is number of characters. This API is valid only if `tty` was specified
-  ## as part of creating and starting the `exec` command. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#exec-resize>`_
+  ## as part of creating and starting the `exec` command. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#exec-resize>`_
   ##
   ## ``FutureError`` represents an exception, it may be ``NotFoundError``,
   ## `ConflictError` or `DockerError`.   
@@ -3023,7 +3028,7 @@ proc execResize*(c: AsyncDocker; name: string; width, height: int) {.async.} =
                      "/exec/" & name & "/resize", queries)
   let res = await request(c, httpPOST, url)
   case res.statusCode:
-  of 200:
+  of 201:
     discard
   of 404:
     raise newException(NotFoundError, res.body)
@@ -3033,7 +3038,7 @@ proc execResize*(c: AsyncDocker; name: string; width, height: int) {.async.} =
 proc execInspect*(c: AsyncDocker, name: string): Future[JsonNode] {.async.} =
   ## Resizes the `tty` session used by the `exec` command id. The unit
   ## is number of characters. This API is valid only if `tty` was specified
-  ## as part of creating and starting the `exec` command. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#exec-resize>`_
+  ## as part of creating and starting the `exec` command. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#exec-resize>`_
   ##
   ## ``FutureError`` represents an exception, it may be ``NotFoundError``,
   ## ``ServerError`` or `DockerError`.  
@@ -3163,7 +3168,7 @@ proc execInspect*(c: AsyncDocker, name: string): Future[JsonNode] {.async.} =
     raise newException(DockerError, res.body)
 
 proc volumes*(c: AsyncDocker, dangling = true): Future[JsonNode] {.async.} =
-  ## List volumes. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#list-volumes>`_
+  ## List volumes. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#list-volumes>`_
   ##
   ## ``FutureError`` represents an exception, it may be ``ServerError``
   ## or `DockerError`. 
@@ -3207,7 +3212,7 @@ proc volumes*(c: AsyncDocker, dangling = true): Future[JsonNode] {.async.} =
 
 proc createVolume*(c: AsyncDocker, name: string, driver = "", 
                    driverOpts: seq[tuple[key, value: string]] = nil): Future[JsonNode] {.async.} =
-  ## Create a volume. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#create-a-volume>`_
+  ## Create a volume. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#create-a-volume>`_
   ##
   ## ``FutureError`` represents an exception, it may be ``ServerError``
   ## or `DockerError`.   
@@ -3256,7 +3261,7 @@ proc createVolume*(c: AsyncDocker, name: string, driver = "",
     raise newException(DockerError, res.body)
 
 proc inspectVolume*(c: AsyncDocker, name: string): Future[JsonNode] {.async.} =
-  ## Return low-level information on the volume `name`. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#inspect-a-volume>`_
+  ## Return low-level information on the volume `name`. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#inspect-a-volume>`_
   ##
   ## ``FutureError`` represents an exception, it may be ``NotFoundError``,
   ## ``ServerError`` or `DockerError`.  
@@ -3291,7 +3296,7 @@ proc inspectVolume*(c: AsyncDocker, name: string): Future[JsonNode] {.async.} =
     raise newException(DockerError, res.body)
 
 proc rmVolume*(c: AsyncDocker, name: string) {.async.} =
-  ## Instruct the driver to remove the volume `name`. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#inspect-a-volume>`_
+  ## Instruct the driver to remove the volume `name`. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#inspect-a-volume>`_
   ##
   ## ``FutureError`` represents an exception, it may be ``NotFoundError``, ``ConflictError``, 
   ## ``ServerError`` or `DockerError`.  
@@ -3317,7 +3322,7 @@ proc rmVolume*(c: AsyncDocker, name: string) {.async.} =
 proc networks*(c: AsyncDocker, 
                nameFilters, idFilters, typeFilters: seq[string] = nil): 
               Future[JsonNode] {.async.} =
-  ## List networks. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#list-networks>`_
+  ## List networks. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#list-networks>`_
   ##
   ## ``FutureError`` represents an exception, it may be ``ServerError`` or ``DockerError``.
   ##
@@ -3419,7 +3424,7 @@ proc networks*(c: AsyncDocker,
     raise newException(DockerError, res.body)
 
 proc inspectNetwork*(c: AsyncDocker, name: string): Future[JsonNode] {.async.} =
-  ## Inspect network. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#inspect-network>`_
+  ## Inspect network. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#inspect-network>`_
   ##
   ## ``FutureError`` represents an exception, it may be ``NotFoundError`` or ``DockerError``.
   ##
@@ -3479,7 +3484,7 @@ proc createNetwork*(c: AsyncDocker, name: string, driver = "bridge",
                     ipamDriver = "", 
                     ipamConfig: seq[tuple[ipRange, subnet, gateway: string]] = nil, 
                     options: seq[tuple[key: string, value: bool]] = nil): Future[JsonNode] {.async.} =
-  ## Create a network. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#create-a-network>`_
+  ## Create a network. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#create-a-network>`_
   ##
   ## ``FutureError`` represents an exception, it may be ``NotFoundError``, ``ServerError`` or `DockerError`.
   ##
@@ -3536,7 +3541,7 @@ proc createNetwork*(c: AsyncDocker, name: string, driver = "bridge",
   
 proc connect*(c: AsyncDocker; name, container: string;
               iPv4Address, iPv6Address = "") {.async.} =
-  ## Connects a container to a network. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#connect-a-container-to-a-network>`_
+  ## Connects a container to a network. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#connect-a-container-to-a-network>`_
   ##
   ## ``FutureError`` represents an exception, it may be ``NotFoundError``, ``ServerError``
   ## or ``DockerError``.
@@ -3546,7 +3551,7 @@ proc connect*(c: AsyncDocker; name, container: string;
   ## 
   ## ``FutureError`` represents an exception, it may be ``NotFoundError`` or `DockerError`.
   ##
-  ## Docs: https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#connect-a-container-to-a-network
+  ## Docs: https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#connect-a-container-to-a-network
   var jBody = newJObject()
   add(jBody, "Container", %container)
   var jEndpointConfig = newJObject()
@@ -3569,7 +3574,7 @@ proc connect*(c: AsyncDocker; name, container: string;
     raise newException(DockerError, res.body)
 
 proc disconnect*(c: AsyncDocker; name, container: string; force = false) {.async.} =
-  ## Disconnects a container from a network. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#disconnect-a-container-from-a-network>`_
+  ## Disconnects a container from a network. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#disconnect-a-container-from-a-network>`_
   ##
   ## ``FutureError`` represents an exception, it may be ``NotFoundError``, ``ServerError``
   ## or ``DockerError``.
@@ -3597,7 +3602,7 @@ proc disconnect*(c: AsyncDocker; name, container: string; force = false) {.async
     raise newException(DockerError, res.body)
 
 proc rmNetWork*(c: AsyncDocker, name: string) {.async.} =
-  ## Instruct the driver to remove the network `name`. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#remove-a-network>`_
+  ## Instruct the driver to remove the network `name`. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#remove-a-network>`_
   ##
   ## ``FutureError`` represents an exception, it may be ``NotFoundError``, ``ServerError`` or ``DockerError``.
   ##
@@ -3607,8 +3612,9 @@ proc rmNetWork*(c: AsyncDocker, name: string) {.async.} =
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/networks/" & name)
   let res = await request(c, httpDELETE, url)
+  echo res
   case res.statusCode:
-  of 200:
+  of 204:
     discard
   of 404:
     raise newException(NotFoundError, res.body)
