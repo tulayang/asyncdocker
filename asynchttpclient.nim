@@ -74,7 +74,7 @@ type
   ResponsePhase = enum
     rpProtocol, rpHeaders, rpBody
 
-  Callback* = proc(chunk: string): bool
+  Callback* = proc(chunk: string): Future[bool]
 
 when not defined(ssl):
   type SSLContext = ref object
@@ -206,7 +206,7 @@ proc parseChunks(client: AsyncHttpClient,
     if cb == nil:
       add(result, chunk)
     else:
-      if cb(chunk):
+      if (await cb(chunk)):
         close(client)
         break
 
@@ -223,7 +223,7 @@ proc parseVndStream(client: AsyncHttpClient,
     if cb == nil:
       add(result, buf & "\L")
     else:
-      if cb(buf & "\L"):
+      if (await cb(buf & "\L")):
         close(client)
         break
 
@@ -308,7 +308,7 @@ proc parseResponse(client: AsyncHttpClient, getBody: bool,
                                    $length & " got " & $len(body))
               if cb == nil:
                 shallowCopy(result.body, body)
-              elif cb(body):
+              elif (await cb(body)):
                 close(client)
           else:
             if getOrDefault(result.headers, "Connection") == "close":
@@ -323,7 +323,7 @@ proc parseResponse(client: AsyncHttpClient, getBody: bool,
               if cb == nil:
                 shallowCopy(result.body, body)
               else:
-                discard cb(body)
+                discard (await cb(body))
       break
 
 proc request*(client: AsyncHttpClient, httpMethod: string, url: Uri, 
@@ -378,23 +378,29 @@ proc request*(client: AsyncHttpClient, httpMethod: HttpMethod, url: Uri,
 when isMainModule:
   proc main() {.async.} =
     var client = newAsyncHttpClient()
-    var res = await request(client, httpGET, parseUri("http://127.0.0.1:10001"), 
+    var res = await request(client, httpGET, parseUri("http://www.baidu.com"), 
                             newStringTable(modeCaseInsensitive))
     echo "Client connected: ", client.connected
     echo "Got response status code: ", res.statusCode
     echo "Got response reason phrase: ", res.reasonPhrase
     echo "Got response headers: ", res.headers
-    echo "Got response body: ", res.body
+    #echo "Got response body: ", res.body
 
-    var res2 = await request(client, "GET", parseUri("http://127.0.0.1:10001"))
+    var res2 = await request(client, "GET", parseUri("http://www.baidu.com"))
     echo "Client connected: ", client.connected
     echo "Got response status code: ", res2.statusCode
     echo "Got response reason phrase: ", res2.reasonPhrase
     echo "Got response headers: ", res2.headers
-    echo "Got response body: ", res2.body
+    #echo "Got response body: ", res2.body
+
+    proc cb(chunk: string): Future[bool] {.async.} =
+      write(stdout, "chunk: ") 
+      await sleepAsync(1000)
+      write(stdout, "data\n") 
+      flushFile(stdout)
 
     var res3 = await request(client, "GET", parseUri("https://github.com/"), 
-                             newStringTable(modeCaseInsensitive))
+                             newStringTable(modeCaseInsensitive), cb = cb)
     echo "Client connected: ", client.connected
     echo "Got response status code: ", res3.statusCode
     echo "Got response reason phrase: ", res3.reasonPhrase

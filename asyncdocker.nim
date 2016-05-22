@@ -255,6 +255,7 @@
 
 import asyncdispatch, asynchttpclient, strutils, json, strtabs, uri, net
 import math, nre, base64
+export asynchttpclient
 
 when defined(ssl):
   import openssl
@@ -363,14 +364,14 @@ proc add(x: var JsonNode, key: string, list: seq[tuple[key, value: string]]) =
     add(j, i.key, %i.value)
   add(x, key, j)
 
-proc parseVnd(cb: proc(stream: int, payload: string): bool): Callback = 
+proc parseVnd(cb: proc(stream: int, payload: string): Future[bool]): Callback = 
   var buff: array[8, char]
   var buffPos = 0
   var size = -1
   var payload: string
   var payloadPos = 0
   var stream = 0
-  proc callback(chunk: string): bool = 
+  proc callback(chunk: string): Future[bool] = 
     var le = len(chunk)
     var i = 0
     while i < le:
@@ -394,7 +395,6 @@ proc parseVnd(cb: proc(stream: int, payload: string): bool): Callback =
       buffPos = 0
       size = -1
       result = cb(stream, payload)
-
   return callback
 
 proc ps*(c: AsyncDocker, 
@@ -1135,7 +1135,7 @@ proc top*(c: AsyncDocker, name: string, psArgs = "-ef"): Future[JsonNode] {.asyn
 
 proc logs*(c: AsyncDocker; name: string; 
            stdout = true; stderr, follow, timestamps = false; 
-           since = 0; tail = "all", cb: proc(stream: int, log: string): bool) {.async.} =
+           since = 0; tail = "all", cb: proc(stream: int, log: string): Future[bool]) {.async.} =
   ## Get `stdout` and `stderr` logs from the container `name` (name or id).
   ## see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#get-container-logs>`_
   ##
@@ -1263,7 +1263,7 @@ proc changes*(c: AsyncDocker, name: string): Future[JsonNode] {.async.} =
     raise newException(DockerError, res.body)
 
 proc exportContainer*(c: AsyncDocker, name: string,
-                      cb: proc(data: string): bool) {.async.} =
+                      cb: proc(data: string): Future[bool]) {.async.} =
   ## Export the contents of container `name` (name or id). see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#export-a-container>`_
   ##
   ## ``FutureError`` represents an exception, it may be ``NotFoundError``, 
@@ -1287,7 +1287,7 @@ proc exportContainer*(c: AsyncDocker, name: string,
     raise newException(DockerError, res.body)
 
 proc stats*(c: AsyncDocker, name: string, stream = false,
-            cb: proc(stat: JsonNode): bool) {.async.} =
+            cb: proc(stat: JsonNode): Future[bool]) {.async.} =
   ## Returns a live the container’s resource usage statistics.
   ## Note: this functionality currently only works when using the libcontainer 
   ## exec-driver. Note: not support stream mode currently. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#get-container-stats-based-on-resource-usage>`_
@@ -1384,7 +1384,7 @@ proc stats*(c: AsyncDocker, name: string, stream = false,
   ##      "throttling_data" : {}
   ##    }
   ##   } 
-  proc callback(chunk: string): bool = 
+  proc callback(chunk: string): Future[bool] = 
     try:
       # There's an error `out of valid range` of `hierarchical_memory_limit`.
       let data = replace(chunk, re("\"hierarchical_memory_limit\":(\\d+)"), 
@@ -1680,7 +1680,7 @@ proc unpause*(c: AsyncDocker, name: string) {.async.} =
 
 proc attach*(c: AsyncDocker; name: string; detachKeys: string = nil;
              logs, stream, stdin, stdout, stderr = false;
-             cb: proc(stream: int, data: string): bool) {.async.} =
+             cb: proc(stream: int, data: string): Future[bool]) {.async.} =
   ## Attach to the container `name`. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#attach-to-a-container>`_ 
   ##
   ## ``FutureError`` represents an exception, it may be `BadParameterError`, 
@@ -1839,7 +1839,7 @@ proc retrieveArchive*(c: AsyncDocker, name: string, path: string): Future[JsonNo
     raise newException(DockerError, res.body)
 
 proc getArchive*(c: AsyncDocker, name: string, path: string,
-                 cb: proc(archive: string): bool): Future[JsonNode] {.async.} =  
+                 cb: proc(archive: string): Future[bool]): Future[JsonNode] {.async.} =  
   ## Get an tar archive of a resource in the filesystem of container `name`. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#get-an-archive-of-a-filesystem-resource-in-a-container`_
   ## 
   ## ``FutureError`` represents an exception, it may be ``NotFoundError``, ``BadParameterError``, 
@@ -2041,7 +2041,7 @@ proc build*(c: AsyncDocker; tarball: string;
             cpuperiod, cpuquota, shmsize = 0; 
             buildargs: seq[tuple[key: string, value: string]] = nil; 
             registryAuth: seq[tuple[url, username, password: string]] = nil;
-            cb: proc(state: JsonNode): bool = nil) {.async.} =
+            cb: proc(state: JsonNode): Future[bool] = nil) {.async.} =
   ## Build an image from a Dockerfile. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#build-image-from-a-dockerfile>`_
   ##
   ## ``FutureError`` represents an exception, it may be ``ServerError`` or ``DockerError``.
@@ -2074,7 +2074,7 @@ proc build*(c: AsyncDocker; tarball: string;
   ## * ``shmsize`` - Size of /dev/shm in bytes. The size must be greater than 0. If omitted the system
   ##   uses 64MB.
   ## * ``registry`` - Registry auth config. 
-  proc callback(chunk: string): bool = 
+  proc callback(chunk: string): Future[bool] = 
     try:
       result = cb(parseJson(chunk))
     except:
@@ -2139,7 +2139,7 @@ proc build*(c: AsyncDocker; tarball: string;
 proc pull*(c: AsyncDocker; fromImage: string; 
            fromSrc, repo, tag: string = nil;
            registryAuth: tuple[username, password, email: string] = (nil, nil, nil);
-           cb: proc(state: JsonNode): bool) {.async.} =
+           cb: proc(state: JsonNode): Future[bool]) {.async.} =
   ## Create an image either by pulling it from the registry or by importing it. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#create-an-image>`_
   ##
   ## ``FutureError`` represents an exception, it may be ``ServerError``
@@ -2156,7 +2156,7 @@ proc pull*(c: AsyncDocker; fromImage: string;
   ## * ``tag`` - Tag or digest.
   ## * ``registry`` - Registry auth config.
   ## * ``cb`` - Handle the response state.
-  proc callback(chunk: string): bool = 
+  proc callback(chunk: string): Future[bool] = 
     try:
       result = cb(parseJson(chunk))
     except:
@@ -2370,7 +2370,7 @@ proc history*(c: AsyncDocker, name: string): Future[JsonNode] {.async.} =
 
 proc push*(c: AsyncDocker, name: string, tag: string = nil,
            registryAuth: tuple[username, password, email: string] = (nil, nil, nil),
-           cb: proc(state: JsonNode): bool) {.async.} =
+           cb: proc(state: JsonNode): Future[bool]) {.async.} =
   ## Push the image `name` on the registry. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#push-an-image-on-the-registry>`_
   ##
   ## If you wish to push an image on to a private registry, that image must already
@@ -2394,7 +2394,7 @@ proc push*(c: AsyncDocker, name: string, tag: string = nil,
   ##     {"status": "Pushing", "progress": "1/? (n/a)", "progressDetail": {"current": 1}}}
   ##     {"error": "Invalid..."}
   ##     ...
-  proc callback(chunk: string): bool = 
+  proc callback(chunk: string): Future[bool] = 
     try:
       result = cb(parseJson(chunk))
     except:
@@ -2791,7 +2791,7 @@ proc commit*(c: AsyncDocker; container: string;
   
 proc events*(c: AsyncDocker; since, until = 0; 
              filters: seq[tuple[key, value: string]] = nil;
-             cb: proc(event: JsonNode): bool) {.async.} =
+             cb: proc(event: JsonNode): Future[bool]) {.async.} =
   ## Get container events from docker, either in real time via streaming, or 
   ## via polling (using since). see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#monitor-docker-s-events>`_
   ##
@@ -2818,7 +2818,7 @@ proc events*(c: AsyncDocker; since, until = 0;
   ##     {"status":"create","id":"5745704abe9caa5","from":"busybox","time":1442421716,"timeNano":1442421716853979870}
   ##     {"status":"attach","id":"5745704abe9caa5","from":"busybox","time":1442421716,"timeNano":1442421716894759198}
   ##     {"status":"start","id":"5745704abe9caa5","from":"busybox","time":1442421716,"timeNano":1442421716983607193}
-  proc callback(chunk: string): bool = 
+  proc callback(chunk: string): Future[bool] = 
     try:
       result = cb(parseJson(chunk))
     except:
@@ -2844,7 +2844,7 @@ proc events*(c: AsyncDocker; since, until = 0;
   else:
     raise newException(DockerError, res.body)
 
-proc get*(c: AsyncDocker, name: string, cb: proc(data: string): bool) {.async.} =
+proc get*(c: AsyncDocker, name: string, cb: proc(data: string): Future[bool]) {.async.} =
   ## Get a tarball containing all images and metadata for the repository
   ## specified by `name`. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#get-a-tarball-containing-all-images-in-a-repository>`_
   ##
@@ -2870,7 +2870,7 @@ proc get*(c: AsyncDocker, name: string, cb: proc(data: string): bool) {.async.} 
   else:
     raise newException(DockerError, res.body)
 
-proc get*(c: AsyncDocker, names: seq[string], cb: proc(data: string): bool) {.async.} =
+proc get*(c: AsyncDocker, names: seq[string], cb: proc(data: string): Future[bool]) {.async.} =
   ## Get a tarball containing all images and metadata for one or more repositories.
   ## see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#get-a-tarball-containing-all-images>`_
   ##
@@ -2972,7 +2972,7 @@ proc execCreate*(c: AsyncDocker; name: string;
 
 proc execStart*(c: AsyncDocker; name: string; 
                 detach, tty = false;
-                cb: proc(data: string): bool) {.async.} =
+                cb: proc(data: string): Future[bool]) {.async.} =
   ## Starts a previously set up `exec` instance `name`. If detach is true, this
   ## API returns after starting the `exec` command. Otherwise, this API sets
   ## up an interactive session with the `exec` command. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.22/#exec-start>`_
