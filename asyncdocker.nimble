@@ -1,6 +1,6 @@
 [Package]
 name        = "asyncdocker"
-version     = "0.1.1"
+version     = "0.2.0"
 author      = "Wang Tong"
 description = "Asynchronous docker client written by Nim-lang"
 license     = "MIT"
