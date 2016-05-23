@@ -47,7 +47,7 @@ proc attachCb(): proc(stream: int, payload: string): Future[bool] =
     inc(m)
   result = cb
 
-proc getArchiveCb(chunk: string): Future[bool] {.async.} = 
+proc getArchiveCb(chunk: string, stat: JsonNode): Future[bool] {.async.} = 
   echo chunk
 
 proc buildCb(state: JsonNode): Future[bool] {.async.} = 
@@ -72,12 +72,13 @@ proc getCb(): proc(data: string): Future[bool] =
   result = cb
 
 proc getsCb(): proc(data: string): Future[bool] =
-  var b = 1
-  proc getsCb(data: string): Future[bool] {.async.} = 
+  var a = 1
+  proc cb(data: string): Future[bool] {.async.} = 
     echo data
-    if b == 5:
+    if a == 5:
       result = true
-    inc(b)
+    inc(a)
+  result = cb
 
 proc execStartCb(data: string): Future[bool] {.async.} = 
   echo "Date: ", data
@@ -181,7 +182,7 @@ proc main() {.async.} =
   echo archive
 
   echo "\n==================== Get Archive ===================\n"
-  echo await docker.getArchive(name = "hello", path = "/home", cb = getArchiveCb)
+  await docker.getArchive(name = "hello", path = "/home", cb = getArchiveCb)
 
   await docker.putArchive(name = "hello", path = "/home",
                           archive = $(readFile(joinPath(getAppDir(), "put_archive.tar.gz"))))

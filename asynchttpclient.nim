@@ -69,7 +69,6 @@ type
     statusCode: int
     reasonPhrase: string
     headers: StringTableRef
-    body: string
 
   ResponsePhase = enum
     rpProtocol, rpHeaders, rpBody
@@ -168,10 +167,7 @@ proc recvFull(socket: AsyncSocket, size: int): Future[string] {.async.} =
       break # We've been disconnected.
     add(result, data)
 
-proc parseChunks(client: AsyncHttpClient, 
-                 cb: Callback = nil): Future[string] {.async.} =
-  if cb == nil:
-    result = ""
+proc parseChunks(client: AsyncHttpClient, cb: Callback) {.async.} =
   while true:
     var chunkSize = 0
     var chunkSizeStr = await recvLine(client.socket)
@@ -203,36 +199,25 @@ proc parseChunks(client: AsyncHttpClient,
     let chunk = await recvFull(client.socket, chunkSize)
     discard await recvFull(client.socket, 2) # Skip \c\L
     # Streaming report the chunk data.
-    if cb == nil:
-      add(result, chunk)
-    else:
-      if (await cb(chunk)):
-        close(client)
-        break
+    if await cb(chunk):
+      close(client)
+      break
 
-proc parseVndStream(client: AsyncHttpClient, 
-                    cb: Callback = nil): Future[string] {.async.} =
+proc parseDockerVnd(client: AsyncHttpClient, cb: Callback) {.async.} =
   var buf = ""
-  if cb == nil:
-    result = ""
   while true:
     buf = await recvLine(client.socket)
     if buf == "": 
       close(client)
       break
-    if cb == nil:
-      add(result, buf & "\L")
-    else:
-      if (await cb(buf & "\L")):
-        close(client)
-        break
+    if await cb(buf & "\L"):
+      close(client)
+      break
 
-proc parseResponse(client: AsyncHttpClient, getBody: bool, 
-                   cb: Callback = nil): Future[Response] {.async.} =
+proc responseProtocol*(client: AsyncHttpClient): Future[Response] {.async.} =
   var fullyRead = false
   var phase = rpProtocol
   result.headers = newStringTable(modeCaseInsensitive)
-
   while true:
     case phase:
     of rpProtocol:
@@ -271,8 +256,7 @@ proc parseResponse(client: AsyncHttpClient, getBody: bool,
         raise newException(ProtocolError, 
                            "connection was closed before full request has been made")
       if line == "\c\L":
-        phase = rpBody
-        continue
+        break
       var name = ""
       var n = parseUntil(line, name, ':', lineAt)
       if n <= 0: 
@@ -282,64 +266,56 @@ proc parseResponse(client: AsyncHttpClient, getBody: bool,
         raise newException(ProtocolError, "invalid header")
       inc(lineAt)
       result.headers[name] = strip(line[lineAt..^1])
-    of rpBody:
-      if getBody:
-        var body: string
-        if getOrDefault(result.headers, "Transfer-Encoding") == "chunked":
-          result.body = await parseChunks(client, cb)
-        elif getOrDefault(result.headers, "Content-Type") == "application/vnd.docker.raw-stream":
-          result.body = await parseVndStream(client, cb)
-        else:
-          # -REGION- Content-Length
-          # (http://tools.ietf.org/html/rfc2616#section-4.4) NR.3
-          var contentLengthHeader = getOrDefault(result.headers, "Content-Length")
-          if contentLengthHeader != "":
-            var length = parseInt(contentLengthHeader)
-            if length > 0:
-              body = await recvFull(client.socket, length)
-              if body == "":
-                close(client)
-                raise newException(ProtocolError, 
-                                   "connection was closed before full request has been made")
-              if len(body) != length:
-                close(client)
-                raise newException(ProtocolError, 
-                                   "received length doesn't match expected length, wanted " &
-                                   $length & " got " & $len(body))
-              if cb == nil:
-                shallowCopy(result.body, body)
-              elif (await cb(body)):
-                close(client)
-          else:
-            if getOrDefault(result.headers, "Connection") == "close":
-              body = ""
-              var buf = ""
-              while true:
-                buf = await recv(client.socket, BufferSize)
-                if buf == "": 
-                  break
-                add(body, buf)
-              close(client)
-              if cb == nil:
-                shallowCopy(result.body, body)
-              else:
-                discard (await cb(body))
+    else:
       break
 
-proc request*(client: AsyncHttpClient, httpMethod: string, url: Uri, 
-              headers: StringTableRef = nil, body: string = nil, 
-              cb: Callback = nil): Future[Response] {.async.} =
-  ## Connects to the hostname specified by the ``Uri`` and performs a request
-  ## using the custom method string specified by ``httpMethod``.
-  ##
-  ## If the encoding of response data is "Transfer-Encoding: chunk", you can 
-  ## specify ``cb`` to process the data like a stream.
-  ##
-  ## Connection will kept alive. Further requests on the same ``client`` to
-  ## the same hostname will not require a new connection to be made. The
-  ## connection can be closed by using the ``close`` procedure.
-  ##
-  ## The returned future will complete once the request is completed.
+proc responseBody*(client: AsyncHttpClient, res: Response, cb: Callback) {.async.} = 
+  if getOrDefault(res.headers, "Transfer-Encoding") == "chunked":
+    await parseChunks(client, cb)
+  elif getOrDefault(res.headers, "Content-Type") == "application/vnd.docker.raw-stream":
+    await parseDockerVnd(client, cb)
+  else:
+    # -REGION- Content-Length
+    # (http://tools.ietf.org/html/rfc2616#section-4.4) NR.3
+    let contentLengthHeader = getOrDefault(res.headers, "Content-Length")
+    if contentLengthHeader != "":
+      let length = parseInt(contentLengthHeader)
+      if length > 0:
+        let body = await recvFull(client.socket, length)
+        if body == "":
+          close(client)
+          raise newException(ProtocolError, 
+                             "got disconnected while trying to read body")
+        if len(body) != length:
+          close(client)
+          raise newException(ProtocolError, 
+                             "received length doesn't match expected length, wanted " &
+                             $length & " got " & $len(body))
+        if await cb(body):
+          close(client)
+    else:
+      if getOrDefault(res.headers, "Connection") == "close":
+        var body = ""
+        var buf = ""
+        while true:
+          buf = await recv(client.socket, BufferSize)
+          if buf == "": 
+            break
+          add(body, buf)
+        close(client)
+        discard await cb(body)
+
+proc responseBody*(client: AsyncHttpClient, res: Response): Future[string] {.async.} = 
+  var body = ""
+  proc cb(chunk: string): Future[bool] = 
+    result = newFuture[bool]("request")
+    add(body, chunk)
+    complete(result, false)
+  await responseBody(client, res, cb)
+  shallowCopy(result, body)
+
+proc requestNative*(client: AsyncHttpClient, httpMethod: string, url: Uri, 
+                    headers: StringTableRef = nil, body: string = nil) {.async.} =
   if client.currentURL.hostname != url.hostname or
      client.currentURL.port != url.port or
      client.currentURL.scheme != url.scheme:
@@ -357,54 +333,47 @@ proc request*(client: AsyncHttpClient, httpMethod: string, url: Uri,
   await send(client.socket, headerBytes)
   if body != nil and body != "":
     await send(client.socket, body)
-  result = await parseResponse(client, httpMethod != "HEAD", cb)
+
+proc requestNative*(client: AsyncHttpClient, httpMethod: HttpMethod, url: Uri, 
+                    headers: StringTableRef = nil, body: string = nil): Future[void] =
+  requestNative(client, substr($httpMethod, len("http")), url, headers, body)
+
+proc request*(client: AsyncHttpClient, httpMethod: string, url: Uri, 
+              headers: StringTableRef = nil, body: string = nil): 
+             Future[tuple[res: Response, body: string]] {.async.} =
+  await requestNative(client, httpMethod, url, headers, body)
+  result.res = await responseProtocol(client)
+  result.body = await responseBody(client, result.res)
 
 proc request*(client: AsyncHttpClient, httpMethod: HttpMethod, url: Uri, 
-              headers: StringTableRef = nil, body: string = nil,
-              cb: Callback = nil): Future[Response] =
-  ## Connects to the hostname specified by the ``Uri`` and performs a request
-  ## using the method specified.
-  ##
-  ## If the encoding of response data is "Transfer-Encoding: chunk", you can 
-  ## specify ``cb`` to process the data like a stream.
-  ##
-  ## Connection will kept alive. Further requests on the same ``client`` to
-  ## the same hostname will not require a new connection to be made. The
-  ## connection can be closed by using the ``close`` procedure.
-  ##
-  ## The returned future will complete once the request is completed.
-  result = request(client, substr($httpMethod, len("http")), url, headers, body, cb)
+              headers: StringTableRef = nil, body: string = nil): 
+             Future[tuple[res: Response, body: string]] =
+  request(client, substr($httpMethod, len("http")), url, headers, body)
 
 when isMainModule:
   proc main() {.async.} =
     var client = newAsyncHttpClient()
-    var res = await request(client, httpGET, parseUri("http://www.baidu.com"), 
-                            newStringTable(modeCaseInsensitive))
+    let (res1, body1) = await request(client, httpGET, parseUri("http://www.baidu.com"), 
+                                      newStringTable(modeCaseInsensitive))
     echo "Client connected: ", client.connected
-    echo "Got response status code: ", res.statusCode
-    echo "Got response reason phrase: ", res.reasonPhrase
-    echo "Got response headers: ", res.headers
-    #echo "Got response body: ", res.body
+    echo "Got response status code: ", res1.statusCode
+    echo "Got response reason phrase: ", res1.reasonPhrase
+    echo "Got response headers: ", res1.headers
+    echo "Got response body: ", body1
 
-    var res2 = await request(client, "GET", parseUri("http://www.baidu.com"))
+    let (res2, body2) = await request(client, "GET", parseUri("http://www.baidu.com"))
     echo "Client connected: ", client.connected
     echo "Got response status code: ", res2.statusCode
     echo "Got response reason phrase: ", res2.reasonPhrase
     echo "Got response headers: ", res2.headers
-    #echo "Got response body: ", res2.body
+    echo "Got response body: ", body2
 
-    proc cb(chunk: string): Future[bool] {.async.} =
-      write(stdout, "chunk: ") 
-      await sleepAsync(1000)
-      write(stdout, "data\n") 
-      flushFile(stdout)
-
-    var res3 = await request(client, "GET", parseUri("https://github.com/"), 
-                             newStringTable(modeCaseInsensitive), cb = cb)
+    let (res3, body3) = await request(client, "GET", parseUri("https://github.com/"), 
+                             newStringTable(modeCaseInsensitive))
     echo "Client connected: ", client.connected
     echo "Got response status code: ", res3.statusCode
     echo "Got response reason phrase: ", res3.reasonPhrase
     echo "Got response headers: ", res3.headers
-    #echo "Got response body: ", res3.body
+    echo "Got response body: ", body3
 
   waitFor main()

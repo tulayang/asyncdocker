@@ -348,15 +348,6 @@ proc close*(c: AsyncDocker) =
   ## Closes the socket resource used by ``c``.
   close(c.httpclient)
 
-proc request(c: AsyncDocker, httpMethod: HttpMethod, url: Uri, 
-             headers: StringTableRef = nil, body: string = nil,
-             cb: Callback = nil): Future[Response] {.async.} =
-  try:
-    result = await request(c.httpclient, substr($httpMethod, len("http")), 
-                           url, headers, body, cb)
-  except:
-    raise newException(ServerError, getCurrentExceptionMsg())
-
 proc add(x: var JsonNode, key: string, list: seq[string]) = 
   var j = newJArray()
   for i in list:
@@ -536,19 +527,19 @@ proc ps*(c: AsyncDocker,
   add(queries, "filters", $filters)
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/containers/json", queries)
-  let res = await request(c, httpGET, url)
+  let (res, body) = await request(c.httpclient, httpGET, url)
   case res.statusCode:
   of 200:
     try:
-      result = parseJson(res.body)
+      result = parseJson(body)
     except:
       raise newException(ServerError, getCurrentExceptionMsg())
   of 400:
-    raise newException(BadParameterError, res.body)
+    raise newException(BadParameterError, body)
   of 500:
-    raise newException(ServerError, res.body)
+    raise newException(ServerError, body)
   else:
-    raise newException(DockerError, res.body)
+    raise newException(DockerError, body)
 
 proc create*(c: AsyncDocker; 
              image: string;
@@ -887,22 +878,22 @@ proc create*(c: AsyncDocker;
   # echo "------------"
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/containers/create", queries)
-  var headers = newStringTable({"Content-Type":"application/json"})
-  let res = await request(c, httpPOST, url, headers, $jBody)
+  let headers = newStringTable({"Content-Type":"application/json"})
+  let (res, body) = await request(c.httpclient, httpPOST, url, headers, $jBody)
   case res.statusCode:
   of 201:
     try:
-        result =  parseJson(res.body)
+      result =  parseJson(body)
     except:
       raise newException(ServerError, getCurrentExceptionMsg())
   of 404:
-    raise newException(NotFoundError, res.body)
+    raise newException(NotFoundError, body)
   of 406:
-    raise newException(NotAcceptableError, res.body)
+    raise newException(NotAcceptableError, body)
   of 500:
-    raise newException(ServerError, res.body)
+    raise newException(ServerError, body)
   else:
-    raise newException(DockerError, res.body)
+    raise newException(DockerError, body)
 
 proc inspect*(c: AsyncDocker, name: string, size = false): Future[JsonNode] {.async.} =
   ## Return low-level information on the container `name` (name or id). see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#inspect-a-container>`_
@@ -1072,19 +1063,19 @@ proc inspect*(c: AsyncDocker, name: string, size = false): Future[JsonNode] {.as
     add(queries, "size", "1")
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/containers/" & name & "/json", queries)
-  let res = await request(c, httpGET, url)
+  let (res, body) = await request(c.httpclient, httpGET, url)
   case res.statusCode:
   of 200:
     try:
-      result = parseJson(res.body)
+      result = parseJson(body)
     except:
       raise newException(ServerError, getCurrentExceptionMsg())
   of 404:
-    raise newException(NotFoundError, res.body)
+    raise newException(NotFoundError, body)
   of 500:
-    raise newException(ServerError, res.body)
+    raise newException(ServerError, body)
   else:
-    raise newException(DockerError, res.body)
+    raise newException(DockerError, body)
 
 proc top*(c: AsyncDocker, name: string, psArgs = "-ef"): Future[JsonNode] {.async.} =
   ## List processes running inside the container `name` (name or id). see `Docker Reference<https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#list-processes-running-inside-a-container>`_
@@ -1124,23 +1115,24 @@ proc top*(c: AsyncDocker, name: string, psArgs = "-ef"): Future[JsonNode] {.asyn
     add(queries, "ps_args", psArgs)
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/containers/" & name & "/top", queries)
-  let res = await request(c, httpGET, url)
+  let (res, body) = await request(c.httpclient, httpGET, url)
   case res.statusCode:
   of 200:
     try:
-      result = parseJson(res.body)
+      result = parseJson(body)
     except:
       raise newException(ServerError, getCurrentExceptionMsg())
   of 404:
-    raise newException(NotFoundError, res.body)
+    raise newException(NotFoundError, body)
   of 500:
-    raise newException(ServerError, res.body)
+    raise newException(ServerError, body)
   else:
-    raise newException(DockerError, res.body)
+    raise newException(DockerError, body)
 
 proc logs*(c: AsyncDocker; name: string; 
            stdout = true; stderr, follow, timestamps = false; 
-           since = 0; tail = "all", cb: proc(stream: int, log: string): Future[bool]) {.async.} =
+           since = 0; tail = "all"; 
+           cb: proc(stream: int, log: string): Future[bool]) {.async.} = 
   ## Get `stdout` and `stderr` logs from the container `name` (name or id).
   ## see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#get-container-logs>`_
   ##
@@ -1205,17 +1197,17 @@ proc logs*(c: AsyncDocker; name: string;
   add(queries, "tail", tail)
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/containers/" & name & "/logs", queries)
-  let res = await request(c, httpGET, url, 
-                          cb = if cb == nil: nil else: parseVnd(cb))
-  case res.statusCode:
-  of 200:
-    discard
-  of 404:
-    raise newException(NotFoundError, res.body)
-  of 500:
-    raise newException(ServerError, res.body)
+  await requestNative(c.httpclient, httpGET, url)
+  let res = await responseProtocol(c.httpclient)
+  if res.statusCode == 200:
+    await responseBody(c.httpclient, res, cb = parseVnd(cb))
   else:
-    raise newException(DockerError, res.body)
+    let body = await responseBody(c.httpclient, res)
+    if res.statusCode == 404:
+      raise newException(NotFoundError, body)
+    if res.statusCode == 500:
+      raise newException(ServerError, body)
+    raise newException(DockerError, body)
 
 proc changes*(c: AsyncDocker, name: string): Future[JsonNode] {.async.} =
   ## Inspect changes on container’s filesystem. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#inspect-changes-on-a-container-s-filesystem>`_
@@ -1253,22 +1245,22 @@ proc changes*(c: AsyncDocker, name: string): Future[JsonNode] {.async.} =
   ## * `2` - Delete
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/containers/" & name & "/changes")
-  let res = await request(c, httpGET, url)
+  let (res, body) = await request(c.httpclient, httpGET, url)
   case res.statusCode:
   of 200:
     try:
-      result = parseJson(res.body)
+      result = parseJson(body)
     except:
       raise newException(ServerError, getCurrentExceptionMsg())
   of 404:
-    raise newException(NotFoundError, res.body)
+    raise newException(NotFoundError, body)
   of 500:
-    raise newException(ServerError, res.body)
+    raise newException(ServerError, body)
   else:
-    raise newException(DockerError, res.body)
+    raise newException(DockerError, body)
 
 proc exportContainer*(c: AsyncDocker, name: string,
-                      cb: proc(data: string): Future[bool]) {.async.} =
+                      cb: proc(chunk: string): Future[bool]) {.async.} =
   ## Export the contents of container `name` (name or id). see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#export-a-container>`_
   ##
   ## ``FutureError`` represents an exception, it may be ``NotFoundError``, 
@@ -1280,16 +1272,17 @@ proc exportContainer*(c: AsyncDocker, name: string,
   ## * ``cb`` - Handles the data from docker daemon in streaming.
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/containers/" & name & "/export")
-  let res = await request(c, httpGET, url, cb = cb)
-  case res.statusCode:
-  of 200:
-    discard
-  of 404:
-    raise newException(NotFoundError, res.body)
-  of 500:
-    raise newException(ServerError, res.body)
+  await requestNative(c.httpclient, httpGET, url)
+  let res = await responseProtocol(c.httpclient)
+  if res.statusCode == 200:
+    await responseBody(c.httpclient, res, cb = cb)
   else:
-    raise newException(DockerError, res.body)
+    let body = await responseBody(c.httpclient, res)
+    if res.statusCode == 404:
+      raise newException(NotFoundError, body)
+    if res.statusCode == 500:
+      raise newException(ServerError, body)
+    raise newException(DockerError, body)
 
 proc stats*(c: AsyncDocker, name: string, stream = false,
             cb: proc(stat: JsonNode): Future[bool]) {.async.} =
@@ -1390,13 +1383,10 @@ proc stats*(c: AsyncDocker, name: string, stream = false,
   ##    }
   ##   } 
   proc callback(chunk: string): Future[bool] = 
-    try:
-      # There's an error `out of valid range` of `hierarchical_memory_limit`.
-      let data = replace(chunk, re("\"hierarchical_memory_limit\":(\\d+)"), 
-                                   "\"hierarchical_memory_limit\":\"$1\"")
-      result = cb(parseJson(data))
-    except:
-      raise newException(ServerError, getCurrentExceptionMsg())
+    # There's an error `out of valid range` of `hierarchical_memory_limit`.
+    let data = replace(chunk, re("\"hierarchical_memory_limit\":(\\d+)"), 
+                                 "\"hierarchical_memory_limit\":\"$1\"")
+    result = cb(parseJson(data))
 
   var queries: seq[string] = @[]
   if stream:
@@ -1405,21 +1395,17 @@ proc stats*(c: AsyncDocker, name: string, stream = false,
     add(queries, "stream", "0") 
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/containers/" & name & "/stats", queries)
-  let res =
-    if stream: 
-      await request(c, httpGET, url, cb = if cb == nil: nil else: callback)
-    else:
-      await request(c, httpGET, url)
-  case res.statusCode:
-  of 200:
-    if not stream:
-      discard callback(res.body)
-  of 404:
-    raise newException(NotFoundError, res.body)
-  of 500:
-    raise newException(ServerError, res.body)
+  await requestNative(c.httpclient, httpGET, url)
+  let res = await responseProtocol(c.httpclient)
+  if res.statusCode == 200:
+    await responseBody(c.httpclient, res, cb = callback)
   else:
-    raise newException(DockerError, res.body)
+    let body = await responseBody(c.httpclient, res)
+    if res.statusCode == 404:
+      raise newException(NotFoundError, body)
+    if res.statusCode == 500:
+      raise newException(ServerError, body)
+    raise newException(DockerError, body)
 
 proc resize*(c: AsyncDocker, name: string, width: int, height: int)  {.async.} =
   ## Resize the TTY for container with `name` (name or id). The unit is number of characters. 
@@ -1438,16 +1424,16 @@ proc resize*(c: AsyncDocker, name: string, width: int, height: int)  {.async.} =
   add(queries, "h", $height)
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/containers/" & name & "/resize", queries)
-  let res = await request(c, httpPOST, url)
+  let (res, body) = await request(c.httpclient, httpPOST, url)
   case res.statusCode:
   of 200:
     discard
   of 404:
-    raise newException(NotFoundError, res.body)
+    raise newException(NotFoundError, body)
   of 500:
-    raise newException(ServerError, res.body)
+    raise newException(ServerError, body)
   else:
-    raise newException(DockerError, res.body)
+    raise newException(DockerError, body)
 
 proc start*(c: AsyncDocker, name: string, detachKeys: string = nil) {.async.} =
   ## Start the container `name` (name or id). see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#start-a-container>`_
@@ -1466,16 +1452,16 @@ proc start*(c: AsyncDocker, name: string, detachKeys: string = nil) {.async.} =
     add(queries, "detachKeys", detachKeys)
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/containers/" & name & "/start")
-  let res = await request(c, httpPOST, url)
+  let (res, body) = await request(c.httpclient, httpPOST, url)
   case res.statusCode:
   of 204, 304:
     discard
   of 404:
-    raise newException(NotFoundError, res.body)
+    raise newException(NotFoundError, body)
   of 500:
-    raise newException(ServerError, res.body)
+    raise newException(ServerError, body)
   else:
-    raise newException(DockerError, res.body)
+    raise newException(DockerError, body)
 
 proc stop*(c: AsyncDocker, name: string, time = 10) {.async.} =
   ## Stop the container `name` (name or id). see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#stop-a-container>`_
@@ -1491,16 +1477,16 @@ proc stop*(c: AsyncDocker, name: string, time = 10) {.async.} =
   add(queries, "t", $time)
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/containers/" & name & "/stop", queries)
-  let res = await request(c, httpPOST, url)
+  let (res, body) = await request(c.httpclient, httpPOST, url)
   case res.statusCode:
   of 204, 304:
     discard
   of 404:
-    raise newException(NotFoundError, res.body)
+    raise newException(NotFoundError, body)
   of 500:
-    raise newException(ServerError, res.body)
+    raise newException(ServerError, body)
   else:
-    raise newException(DockerError, res.body)
+    raise newException(DockerError, body)
 
 proc restart*(c: AsyncDocker, name: string, time = 10) {.async.} =
   ## Restart the container `name` (name or id). see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#restart-a-container>`_
@@ -1517,16 +1503,16 @@ proc restart*(c: AsyncDocker, name: string, time = 10) {.async.} =
   add(queries, "t", $time)
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/containers/" & name & "/restart", queries)
-  let res = await request(c, httpPOST, url)
+  let (res, body) = await request(c.httpclient, httpPOST, url)
   case res.statusCode:
   of 204:
     discard
   of 404:
-    raise newException(NotFoundError, res.body)
+    raise newException(NotFoundError, body)
   of 500:
-    raise newException(ServerError, res.body)
+    raise newException(ServerError, body)
   else:
-    raise newException(DockerError, res.body)
+    raise newException(DockerError, body)
 
 proc kill*(c: AsyncDocker, name: string, signal = "SIGKILL") {.async.} =
   ## Kill the container `name` (name or id). see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#kill-a-container>`_
@@ -1544,16 +1530,16 @@ proc kill*(c: AsyncDocker, name: string, signal = "SIGKILL") {.async.} =
   add(queries, "signal", signal)
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/containers/" & name & "/kill", queries)
-  let res = await request(c, httpPOST, url)
+  let (res, body) = await request(c.httpclient, httpPOST, url)
   case res.statusCode:
   of 204:
     discard
   of 404:
-    raise newException(NotFoundError, res.body)
+    raise newException(NotFoundError, body)
   of 500:
-    raise newException(ServerError, res.body)
+    raise newException(ServerError, body)
   else:
-    raise newException(DockerError, res.body)
+    raise newException(DockerError, body)
 
 proc update*(c: AsyncDocker; name: string; 
              blkioWeight, cpuShares, cpuPeriod, cpuQuota = 0;
@@ -1595,22 +1581,22 @@ proc update*(c: AsyncDocker; name: string;
     add(jBody, "KernelMemory", %kernelMemory)
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/containers/" & name & "/update")
-  var headers = newStringTable({"Content-Type":"application/json"})
-  let res = await request(c, httpPOST, url, headers, $jBody)
+  let headers = newStringTable({"Content-Type":"application/json"})
+  let (res, body) = await request(c.httpclient, httpPOST, url, headers, $jBody)
   case res.statusCode:
   of 200:
     try:
-        result = parseJson(res.body)
+        result = parseJson(body)
     except:
       raise newException(ServerError, getCurrentExceptionMsg())
   of 400:
-    raise newException(BadParameterError, res.body)
+    raise newException(BadParameterError, body)
   of 404:
-    raise newException(NotFoundError, res.body)
+    raise newException(NotFoundError, body)
   of 500:
-    raise newException(ServerError, res.body)
+    raise newException(ServerError, body)
   else:
-    raise newException(DockerError, res.body)
+    raise newException(DockerError, body)
 
 proc rename*(c: AsyncDocker, name: string, newname: string) {.async.} =
   ## Rename the container `name` to `newname`. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#rename-a-container>`_
@@ -1626,18 +1612,18 @@ proc rename*(c: AsyncDocker, name: string, newname: string) {.async.} =
   add(queries, "name", newname)
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/containers/" & name & "/rename", queries)
-  let res = await request(c, httpPOST, url)
+  let (res, body) = await request(c.httpclient, httpPOST, url)
   case res.statusCode:
   of 204:
     discard
   of 404:
-    raise newException(NotFoundError, res.body)
+    raise newException(NotFoundError, body)
   of 409:
-    raise newException(ConflictError, res.body)
+    raise newException(ConflictError, body)
   of 500:
-    raise newException(ServerError, res.body)
+    raise newException(ServerError, body)
   else:
-    raise newException(DockerError, res.body)
+    raise newException(DockerError, body)
 
 proc pause*(c: AsyncDocker, name: string) {.async.} =
   ## Pause the container `name`. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#pause-a-container>`_
@@ -1650,16 +1636,16 @@ proc pause*(c: AsyncDocker, name: string) {.async.} =
   ## * ``name`` - The container name or id. 
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/containers/" & name & "/pause")
-  let res = await request(c, httpPOST, url)
+  let (res, body) = await request(c.httpclient, httpPOST, url)
   case res.statusCode:
   of 204:
     discard
   of 404:
-    raise newException(NotFoundError, res.body)
+    raise newException(NotFoundError, body)
   of 500:
-    raise newException(ServerError, res.body)
+    raise newException(ServerError, body)
   else:
-    raise newException(DockerError, res.body)
+    raise newException(DockerError, body)
 
 proc unpause*(c: AsyncDocker, name: string) {.async.} =
   ## Unpause the container `name`. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#unpause-a-container>`_
@@ -1672,16 +1658,16 @@ proc unpause*(c: AsyncDocker, name: string) {.async.} =
   ## * ``name`` - The container name or id. 
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/containers/" & name & "/unpause")
-  let res = await request(c, httpPOST, url)
+  let (res, body) = await request(c.httpclient, httpPOST, url)
   case res.statusCode:
   of 204:
     discard
   of 404:
-    raise newException(NotFoundError, res.body)
+    raise newException(NotFoundError, body)
   of 500:
-    raise newException(ServerError, res.body)
+    raise newException(ServerError, body)
   else:
-    raise newException(DockerError, res.body)
+    raise newException(DockerError, body)
 
 proc attach*(c: AsyncDocker; name: string; detachKeys: string = nil;
              logs, stream, stdin, stdout, stderr = false;
@@ -1715,19 +1701,19 @@ proc attach*(c: AsyncDocker; name: string; detachKeys: string = nil;
     add(queries, "stderr", "1")
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/containers/" & name & "/attach", queries)
-  let res = await request(c, httpPOST, url, 
-                          cb = if cb == nil: nil else: parseVnd(cb))
-  case res.statusCode:
-  of 101, 200:
-    discard
-  of 400:
-    raise newException(BadParameterError, res.body)
-  of 404:
-    raise newException(NotFoundError, res.body)
-  of 500:
-    raise newException(ServerError, res.body)
+  await requestNative(c.httpclient, httpPOST, url)
+  let res = await responseProtocol(c.httpclient)
+  if res.statusCode in {101, 200}:
+    await responseBody(c.httpclient, res, cb = parseVnd(cb))
   else:
-    raise newException(DockerError, res.body)
+    let body = await responseBody(c.httpclient, res)
+    if res.statusCode == 400:
+      raise newException(BadParameterError, body)
+    if res.statusCode == 404:
+      raise newException(NotFoundError, body)
+    if res.statusCode == 500:
+      raise newException(ServerError, body)
+    raise newException(DockerError, body)
  
 proc wait*(c: AsyncDocker, name: string): Future[JsonNode] {.async.} =
   ## Waiting for container `name` stops, then returns the exit code. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#wait-a-container>`_
@@ -1747,19 +1733,19 @@ proc wait*(c: AsyncDocker, name: string): Future[JsonNode] {.async.} =
   ##   {"StatusCode": 0}
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/containers/" & name & "/wait")
-  let res = await request(c, httpPOST, url)
+  let (res, body) = await request(c.httpclient, httpPOST, url)
   case res.statusCode:
   of 200:
     try:
-      result = parseJson(res.body)
+      result = parseJson(body)
     except:
       raise newException(ServerError, getCurrentExceptionMsg())
   of 404:
-    raise newException(NotFoundError, res.body)
+    raise newException(NotFoundError, body)
   of 500:
-    raise newException(ServerError, res.body)
+    raise newException(ServerError, body)
   else:
-    raise newException(DockerError, res.body)
+    raise newException(DockerError, body)
 
 proc rm*(c: AsyncDocker, name: string, volumes = false, force = false) {.async.} =
   ## Remove the container `name` from the filesystem. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#remove-a-container>`_
@@ -1779,18 +1765,18 @@ proc rm*(c: AsyncDocker, name: string, volumes = false, force = false) {.async.}
     add(queries, "force", "1")
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/containers/" & name, queries)
-  let res = await request(c, httpDELETE, url)
+  let (res, body) = await request(c.httpclient, httpDELETE, url)
   case res.statusCode:
   of 204:
     discard
   of 400:
-    raise newException(BadParameterError, res.body)
+    raise newException(BadParameterError, body)
   of 404:
-    raise newException(NotFoundError, res.body)
+    raise newException(NotFoundError, body)
   of 500:
-    raise newException(ServerError, res.body)
+    raise newException(ServerError, body)
   else:
-    raise newException(DockerError, res.body)
+    raise newException(DockerError, body)
 
 proc retrieveArchive*(c: AsyncDocker, name: string, path: string): Future[JsonNode] {.async.} =  
   ## Retrieving information about files and folders in the container `name`. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#retrieving-information-about-files-and-folders-in-a-container`_
@@ -1827,7 +1813,7 @@ proc retrieveArchive*(c: AsyncDocker, name: string, path: string): Future[JsonNo
   add(queries, "path", path)
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/containers/" & name & "/archive", queries)
-  let res = await request(c, httpHEAD, url)
+  let (res, body) = await request(c.httpclient, httpHEAD, url)
   case res.statusCode:
   of 200:
     try:
@@ -1835,16 +1821,23 @@ proc retrieveArchive*(c: AsyncDocker, name: string, path: string): Future[JsonNo
     except:
       raise newException(ServerError, getCurrentExceptionMsg())
   of 400:
-    raise newException(BadParameterError, res.body)
+    raise newException(BadParameterError, body)
   of 404:
-    raise newException(NotFoundError, res.body)
+    raise newException(NotFoundError, body)
   of 500:
-    raise newException(ServerError, res.body)
+    raise newException(ServerError, body)
   else:
-    raise newException(DockerError, res.body)
+    raise newException(DockerError, body)
+
+proc getArchiveCb(statHeader: string, 
+                  cb: proc(archive: string, stat: JsonNode): Future[bool]): Callback = 
+  var stat = parseJson(decode(statHeader))
+  proc callback(chunk: string): Future[bool] =
+    cb(chunk, stat)
+  result = callback
 
 proc getArchive*(c: AsyncDocker, name: string, path: string,
-                 cb: proc(archive: string): Future[bool]): Future[JsonNode] {.async.} =  
+                 cb: proc(archive: string, stat: JsonNode): Future[bool]) {.async.} =  
   ## Get an tar archive of a resource in the filesystem of container `name`. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#get-an-archive-of-a-filesystem-resource-in-a-container`_
   ## 
   ## ``FutureError`` represents an exception, it may be ``NotFoundError``, ``BadParameterError``, 
@@ -1885,21 +1878,20 @@ proc getArchive*(c: AsyncDocker, name: string, path: string,
   add(queries, "path", path)
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/containers/" & name & "/archive", queries)
-  let res = await request(c, httpGET, url, cb = cb)
-  case res.statusCode:
-  of 200:
-    try:
-      result = parseJson(decode(res.headers["X-Docker-Container-Path-Stat"]))
-    except:
-      raise newException(ServerError, getCurrentExceptionMsg())
-  of 400:
-    raise newException(BadParameterError, res.body)
-  of 404:
-    raise newException(NotFoundError, res.body)
-  of 500:
-    raise newException(ServerError, res.body)
+  await requestNative(c.httpclient, httpGET, url)
+  let res = await responseProtocol(c.httpclient)
+  if res.statusCode == 200:
+    await responseBody(c.httpclient, res, 
+                       cb = getArchiveCb(res.headers["X-Docker-Container-Path-Stat"], cb))
   else:
-    raise newException(DockerError, res.body)
+    let body = await responseBody(c.httpclient, res)
+    if res.statusCode == 400:
+      raise newException(BadParameterError, body)
+    if res.statusCode == 404:
+      raise newException(NotFoundError, body)
+    if res.statusCode == 500:
+      raise newException(ServerError, body)
+    raise newException(DockerError, body)
 
 proc putArchive*(c: AsyncDocker, name: string, path: string, archive: string,
                  noOverwriteDirNonDir = false) {.async.} =  
@@ -1945,20 +1937,20 @@ proc putArchive*(c: AsyncDocker, name: string, path: string, archive: string,
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/containers/" & name & "/archive", queries)
   let headers = newStringTable({"Content-Type":"application/x-tar"})
-  let res = await request(c, httpPUT, url, headers, archive)
+  let (res, body) = await request(c.httpclient, httpPUT, url, headers, archive)
   case res.statusCode:
   of 200:
     discard
   of 400:
-    raise newException(BadParameterError, res.body)
+    raise newException(BadParameterError, body)
   of 403:
-    raise newException(ForbiddenError, res.body)
+    raise newException(ForbiddenError, body)
   of 404:
-    raise newException(NotFoundError, res.body)
+    raise newException(NotFoundError, body)
   of 500:
-    raise newException(ServerError, res.body)
+    raise newException(ServerError, body)
   else:
-    raise newException(DockerError, res.body)
+    raise newException(DockerError, body)
 
 proc images*(c: AsyncDocker; all, digests = false; 
              danglingFilters = false; labelFilters: seq[string] = nil;
@@ -2029,15 +2021,15 @@ proc images*(c: AsyncDocker; all, digests = false;
     add(queries, "filter", filter)
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/images/json", queries)
-  let res = await request(c, httpGET, url)
+  let (res, body) = await request(c.httpclient, httpGET, url)
   case res.statusCode:
   of 200:
     try:
-      result = parseJson(res.body)
+      result = parseJson(body)
     except:
       raise newException(ServerError, getCurrentExceptionMsg())
   else:
-    raise newException(DockerError, res.body)
+    raise newException(DockerError, body)
 
 proc build*(c: AsyncDocker; tarball: string;
             dockerfile, t, remote: string = nil; 
@@ -2046,7 +2038,7 @@ proc build*(c: AsyncDocker; tarball: string;
             cpuperiod, cpuquota, shmsize = 0; 
             buildargs: seq[tuple[key: string, value: string]] = nil; 
             registryAuth: seq[tuple[url, username, password: string]] = nil;
-            cb: proc(state: JsonNode): Future[bool] = nil) {.async.} =
+            cb: proc(state: JsonNode): Future[bool]) {.async.} =
   ## Build an image from a Dockerfile. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#build-image-from-a-dockerfile>`_
   ##
   ## ``FutureError`` represents an exception, it may be ``ServerError`` or ``DockerError``.
@@ -2080,10 +2072,7 @@ proc build*(c: AsyncDocker; tarball: string;
   ##   uses 64MB.
   ## * ``registry`` - Registry auth config. 
   proc callback(chunk: string): Future[bool] = 
-    try:
-      result = cb(parseJson(chunk))
-    except:
-      raise newException(ServerError, getCurrentExceptionMsg())
+    cb(parseJson(chunk))
 
   var queries: seq[string] = @[]
   if dockerfile != nil and dockerfile != "":
@@ -2131,15 +2120,15 @@ proc build*(c: AsyncDocker; tarball: string;
                                 "X-Registry-Config": encode($JRegistryAuth)})
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/build", queries)
-  let res = await request(c, httpPOST, url, headers, tarball, 
-                          if cb == nil: nil else: callback)
-  case res.statusCode:
-  of 200:
-    discard
-  of 500:
-    raise newException(ServerError, res.body)
+  await requestNative(c.httpclient, httpPOST, url, headers, tarball)
+  let res = await responseProtocol(c.httpclient)
+  if res.statusCode == 200:
+    await responseBody(c.httpclient, res, cb = callback)
   else:
-    raise newException(DockerError, res.body)
+    let body = await responseBody(c.httpclient, res)
+    if res.statusCode == 500:
+      raise newException(ServerError, body)
+    raise newException(DockerError, body)
 
 proc pull*(c: AsyncDocker; fromImage: string; 
            fromSrc, repo, tag: string = nil;
@@ -2162,10 +2151,7 @@ proc pull*(c: AsyncDocker; fromImage: string;
   ## * ``registry`` - Registry auth config.
   ## * ``cb`` - Handle the response state.
   proc callback(chunk: string): Future[bool] = 
-    try:
-      result = cb(parseJson(chunk))
-    except:
-      raise newException(ServerError, getCurrentExceptionMsg())
+    cb(parseJson(chunk))
 
   var queries: seq[string] = @[]
   add(queries, "fromImage", fromImage)
@@ -2182,15 +2168,15 @@ proc pull*(c: AsyncDocker; fromImage: string;
   add(queries, "X-Registry-Auth", encode($JRegistryAuth))
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/images/create", queries)
-  let res = await request(c, httpPOST, url, 
-                          cb = if cb == nil: nil else: callback)
-  case res.statusCode:
-  of 200:
-    discard
-  of 500:
-    raise newException(ServerError, res.body)
+  await requestNative(c.httpclient, httpPOST, url)
+  let res = await responseProtocol(c.httpclient)
+  if res.statusCode == 200:
+    await responseBody(c.httpclient, res, cb = callback)
   else:
-    raise newException(DockerError, res.body)
+    let body = await responseBody(c.httpclient, res)
+    if res.statusCode == 500:
+      raise newException(ServerError, body)
+    raise newException(DockerError, body)
 
 proc inspectImage*(c: AsyncDocker, name: string): Future[JsonNode] {.async.} =
   ## Return low-level information on the image `name`. see `Docker Reference<https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#inspect-an-image>`_
@@ -2297,19 +2283,19 @@ proc inspectImage*(c: AsyncDocker, name: string): Future[JsonNode] {.async.} =
   ##   }
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/images/" & name & "/json")
-  let res = await request(c, httpGET, url)
+  let (res, body) = await request(c.httpclient, httpGET, url)
   case res.statusCode:
   of 200:
     try:
-      result = parseJson(res.body)
+      result = parseJson(body)
     except:
       raise newException(ServerError, getCurrentExceptionMsg())
   of 404:
-    raise newException(NotFoundError, res.body)
+    raise newException(NotFoundError, body)
   of 500:
-    raise newException(ServerError, res.body)
+    raise newException(ServerError, body)
   else:
-    raise newException(DockerError, res.body)
+    raise newException(DockerError, body)
 
 proc history*(c: AsyncDocker, name: string): Future[JsonNode] {.async.} =
   ## Return the history of the image `name`. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#get-the-history-of-an-image>`_
@@ -2359,19 +2345,19 @@ proc history*(c: AsyncDocker, name: string): Future[JsonNode] {.async.} =
   ##   ]
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/images/" & name & "/history")
-  let res = await request(c, httpGET, url)
+  let (res, body) = await request(c.httpclient, httpGET, url)
   case res.statusCode:
   of 200:
     try:
-      result = parseJson(res.body)
+      result = parseJson(body)
     except:
       raise newException(ServerError, getCurrentExceptionMsg())
   of 404:
-    raise newException(NotFoundError, res.body)
+    raise newException(NotFoundError, body)
   of 500:
-    raise newException(ServerError, res.body)
+    raise newException(ServerError, body)
   else:
-    raise newException(DockerError, res.body)
+    raise newException(DockerError, body)
 
 proc push*(c: AsyncDocker, name: string, tag: string = nil,
            registryAuth: tuple[username, password, email: string] = (nil, nil, nil),
@@ -2400,10 +2386,7 @@ proc push*(c: AsyncDocker, name: string, tag: string = nil,
   ##     {"error": "Invalid..."}
   ##     ...
   proc callback(chunk: string): Future[bool] = 
-    try:
-      result = cb(parseJson(chunk))
-    except:
-      raise newException(ServerError, getCurrentExceptionMsg())
+    cb(parseJson(chunk))
 
   var queries: seq[string] = @[]
   if tag != nil:
@@ -2416,17 +2399,17 @@ proc push*(c: AsyncDocker, name: string, tag: string = nil,
   let headers = newStringTable({"X-Registry-Auth": encode($JRegistryAuth)})
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/images/" & name & "/push", queries)
-  let res = await request(c, httpPOST, url, headers, 
-                          cb = if cb == nil: nil else: callback)
-  case res.statusCode:
-  of 200:
-    discard
-  of 404:
-    raise newException(NotFoundError, res.body)
-  of 500:
-    raise newException(ServerError, res.body)
+  await requestNative(c.httpclient, httpPOST, url, headers)
+  let res = await responseProtocol(c.httpclient)
+  if res.statusCode == 200:
+    await responseBody(c.httpclient, res, cb = callback)
   else:
-    raise newException(DockerError, res.body)
+    let body = await responseBody(c.httpclient, res)
+    if res.statusCode == 404:
+      raise newException(NotFoundError, body)
+    if res.statusCode == 500:
+      raise newException(ServerError, body)
+    raise newException(DockerError, body)
 
 proc tag*(c: AsyncDocker; name, repo, tag: string; force = false) {.async.} =
   ## Tag the image `name` into a repository. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#tag-an-image-into-a-repository>`_
@@ -2446,20 +2429,20 @@ proc tag*(c: AsyncDocker; name, repo, tag: string; force = false) {.async.} =
     add(queries, "force", "1")
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/images/" & name & "/tag", queries)
-  let res = await request(c, httpPOST, url)
+  let (res, body) = await request(c.httpclient, httpPOST, url)
   case res.statusCode:
   of 201:
     discard
   of 400:
-    raise newException(BadParameterError, res.body)
+    raise newException(BadParameterError, body)
   of 404:
-    raise newException(NotFoundError, res.body)
+    raise newException(NotFoundError, body)
   of 409:
-    raise newException(ConflictError, res.body)
+    raise newException(ConflictError, body)
   of 500:
-    raise newException(ServerError, res.body)
+    raise newException(ServerError, body)
   else:
-    raise newException(DockerError, res.body)
+    raise newException(DockerError, body)
 
 proc rmImage*(c: AsyncDocker, name: string,
               force, noprune = false): Future[JsonNode] {.async.} =
@@ -2490,21 +2473,21 @@ proc rmImage*(c: AsyncDocker, name: string,
     add(queries, "noprune", "1")
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/images/" & name, queries)
-  let res = await request(c, httpDELETE, url)
+  let (res, body) = await request(c.httpclient, httpDELETE, url)
   case res.statusCode:
   of 200:
     try:
-      result =  parseJson(res.body)
+      result =  parseJson(body)
     except:
       raise newException(ServerError, getCurrentExceptionMsg())
   of 404:
-    raise newException(NotFoundError, res.body)
+    raise newException(NotFoundError, body)
   of 409:
-    raise newException(ConflictError, res.body)
+    raise newException(ConflictError, body)
   of 500:
-    raise newException(ServerError, res.body)
+    raise newException(ServerError, body)
   else:
-    raise newException(DockerError, res.body)
+    raise newException(DockerError, body)
 
 proc search*(c: AsyncDocker, name: string): Future[JsonNode] {.async.} =
   ## Search for an image on Docker Hub. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#search-images>`_
@@ -2548,17 +2531,17 @@ proc search*(c: AsyncDocker, name: string): Future[JsonNode] {.async.} =
   add(queries, "term", name)
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/images/search", queries)
-  let res = await request(c, httpGET, url)
+  let (res, body) = await request(c.httpclient, httpGET, url)
   case res.statusCode:
   of 200:
     try:
-      result =  parseJson(res.body)
+      result =  parseJson(body)
     except:
       raise newException(ServerError, getCurrentExceptionMsg())
   of 500:
-    raise newException(ServerError, res.body)
+    raise newException(ServerError, body)
   else:
-    raise newException(DockerError, res.body)
+    raise newException(DockerError, body)
 
 proc auth*(c: AsyncDocker; username, password: string;
            email, serveraddress: string): Future[JsonNode] {.async.} =
@@ -2566,7 +2549,7 @@ proc auth*(c: AsyncDocker; username, password: string;
   ## 
   ## ``FutureError`` represents an exception, it may be ``ServerError``, 
   ## or `DockerError`.
-  let body = %*{
+  let jBody = %*{
     "username": username,
     "password": password,
     "email": email,
@@ -2574,17 +2557,17 @@ proc auth*(c: AsyncDocker; username, password: string;
   }
   let url = parseUri(c.scheme, c.hostname, c.port, "/auth")
   let headers = newStringTable({"Content-Type":"application/json"})
-  let res = await request(c, httpPOST, url, headers, $body)
+  let (res, body) = await request(c.httpclient, httpPOST, url, headers, $jBody)
   case res.statusCode:
   of 200, 204:
     try:
-      result =  parseJson(res.body)
+      result =  parseJson(body)
     except:
       raise newException(ServerError, getCurrentExceptionMsg())
   of 500:
-    raise newException(ServerError, res.body)
+    raise newException(ServerError, body)
   else:
-    raise newException(DockerError, res.body)
+    raise newException(DockerError, body)
 
 proc info*(c: AsyncDocker): Future[JsonNode] {.async.} =
   ## Display system-wide information. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#display-system-wide-information>`_
@@ -2646,17 +2629,17 @@ proc info*(c: AsyncDocker): Future[JsonNode] {.async.} =
   ##    "ServerVersion": "1.9.0"
   ##   }  
   let url = parseUri(c.scheme, c.hostname, c.port, "/info")
-  let res = await request(c, httpGET, url)
+  let (res, body) = await request(c.httpclient, httpGET, url)
   case res.statusCode:
   of 200:
     try:
-      result = parseJson(res.body)
+      result = parseJson(body)
     except:
       raise newException(ServerError, getCurrentExceptionMsg())
   of 500:
-    raise newException(ServerError, res.body)
+    raise newException(ServerError, body)
   else:
-    raise newException(DockerError, res.body)
+    raise newException(DockerError, body)
 
 proc version*(c: AsyncDocker): Future[JsonNode] {.async.} =
   ## Display system-wide information. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#show-the-docker-version-information>`_
@@ -2678,17 +2661,17 @@ proc version*(c: AsyncDocker): Future[JsonNode] {.async.} =
   ##    "Experimental": false
   ##   }
   let url = parseUri(c.scheme, c.hostname, c.port, "/version")
-  let res = await request(c, httpGET, url)
+  let (res, body) = await request(c.httpclient, httpGET, url)
   case res.statusCode:
   of 200:
     try:
-      result = parseJson(res.body)
+      result = parseJson(body)
     except:
       raise newException(ServerError, getCurrentExceptionMsg())
   of 500:
-    raise newException(ServerError, res.body)
+    raise newException(ServerError, body)
   else:
-    raise newException(DockerError, res.body)
+    raise newException(DockerError, body)
 
 proc ping*(c: AsyncDocker): Future[string] {.async.} =
   ## Ping the docker server. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#ping-the-docker-server>`_
@@ -2701,14 +2684,14 @@ proc ping*(c: AsyncDocker): Future[string] {.async.} =
   ##
   ##   OK
   let url = parseUri(c.scheme, c.hostname, c.port, "/_ping")
-  let res = await request(c, httpGET, url)
+  let (res, body) = await request(c.httpclient, httpGET, url)
   case res.statusCode:
   of 200:
-    return res.body
+    return body
   of 500:
-    raise newException(ServerError, res.body)
+    raise newException(ServerError, body)
   else:
-    raise newException(DockerError, res.body)
+    raise newException(DockerError, body)
 
 proc commit*(c: AsyncDocker; container: string; 
              repo, tag: string; 
@@ -2780,19 +2763,19 @@ proc commit*(c: AsyncDocker; container: string;
   add(jBody, "Volumes", jVolumes)
   let url = parseUri(c.scheme, c.hostname, c.port, "/commit", queries)
   let headers = newStringTable({"Content-Type":"application/json"})
-  let res = await request(c, httpPOST, url, headers, $jBody)
+  let (res, body) = await request(c.httpclient, httpPOST, url, headers, $jBody)
   case res.statusCode:
   of 201:
     try:
-      result =  parseJson(res.body)
+      result =  parseJson(body)
     except:
       raise newException(ServerError, getCurrentExceptionMsg())
   of 404:
-    raise newException(NotFoundError, res.body)
+    raise newException(NotFoundError, body)
   of 500:
-    raise newException(ServerError, res.body)
+    raise newException(ServerError, body)
   else:
-    raise newException(DockerError, res.body)
+    raise newException(DockerError, body)
   
 proc events*(c: AsyncDocker; since, until = 0; 
              filters: seq[tuple[key, value: string]] = nil;
@@ -2824,10 +2807,7 @@ proc events*(c: AsyncDocker; since, until = 0;
   ##     {"status":"attach","id":"5745704abe9caa5","from":"busybox","time":1442421716,"timeNano":1442421716894759198}
   ##     {"status":"start","id":"5745704abe9caa5","from":"busybox","time":1442421716,"timeNano":1442421716983607193}
   proc callback(chunk: string): Future[bool] = 
-    try:
-      result = cb(parseJson(chunk))
-    except:
-      raise newException(ServerError, getCurrentExceptionMsg())
+    cb(parseJson(chunk))
 
   var queries: seq[string] = @[]
   add(queries, "since", $since)
@@ -2838,16 +2818,16 @@ proc events*(c: AsyncDocker; since, until = 0;
     for i in filters:
       add(JFilters, i.key, %i.value)
     add(queries, "filters", $JFilters)
-  let url = parseUri(c.scheme, c.hostname, c.port, "/events", queries)
-  let res = await request(c, httpGET, url, 
-                          cb = if cb == nil: nil else: callback)
-  case res.statusCode:
-  of 200:
-    discard
-  of 500:
-    raise newException(ServerError, res.body)
+  let url = parseUri(c.scheme, c.hostname, c.port, "/events", queries) 
+  await requestNative(c.httpclient, httpGET, url)
+  let res = await responseProtocol(c.httpclient)
+  if res.statusCode == 200:
+    await responseBody(c.httpclient, res, cb = callback)
   else:
-    raise newException(DockerError, res.body)
+    let body = await responseBody(c.httpclient, res)
+    if res.statusCode == 500:
+      raise newException(ServerError, body)
+    raise newException(DockerError, body)
 
 proc get*(c: AsyncDocker, name: string, cb: proc(data: string): Future[bool]) {.async.} =
   ## Get a tarball containing all images and metadata for the repository
@@ -2866,14 +2846,15 @@ proc get*(c: AsyncDocker, name: string, cb: proc(data: string): Future[bool]) {.
   ##
   ## * ``name`` - The image name and tag (e.g. ubuntu:latest) or image id.
   let url = parseUri(c.scheme, c.hostname, c.port, "/images/" & name & "/get")
-  let res = await request(c, httpGET, url, cb = cb)
-  case res.statusCode:
-  of 200:
-    discard
-  of 500:
-    raise newException(ServerError, res.body)
+  await requestNative(c.httpclient, httpGET, url)
+  let res = await responseProtocol(c.httpclient)
+  if res.statusCode == 200:
+    await responseBody(c.httpclient, res, cb = cb)
   else:
-    raise newException(DockerError, res.body)
+    let body = await responseBody(c.httpclient, res)
+    if res.statusCode == 500:
+      raise newException(ServerError, body)
+    raise newException(DockerError, body)
 
 proc get*(c: AsyncDocker, names: seq[string], cb: proc(data: string): Future[bool]) {.async.} =
   ## Get a tarball containing all images and metadata for one or more repositories.
@@ -2895,14 +2876,15 @@ proc get*(c: AsyncDocker, names: seq[string], cb: proc(data: string): Future[boo
   for name in names:
     add(queries, "names", name)
   let url = parseUri(c.scheme, c.hostname, c.port, "/images/get", queries)
-  let res = await request(c, httpGET, url, cb = cb)
-  case res.statusCode:
-  of 200:
-    discard
-  of 500:
-    raise newException(ServerError, res.body)
+  await requestNative(c.httpclient, httpGET, url)
+  let res = await responseProtocol(c.httpclient)
+  if res.statusCode == 200:
+    await responseBody(c.httpclient, res, cb = cb)
   else:
-    raise newException(DockerError, res.body)
+    let body = await responseBody(c.httpclient, res)
+    if res.statusCode == 500:
+      raise newException(ServerError, body)
+    raise newException(DockerError, body)
 
 proc load(c: AsyncDocker, tarball: string) {.async.} =
   # TODO: ...
@@ -2911,14 +2893,14 @@ proc load(c: AsyncDocker, tarball: string) {.async.} =
   ## ``FutureError`` represents an exception, it may be ``ServerError`` 
   ## or `DockerError`.  
   let url = parseUri(c.scheme, c.hostname, c.port, "/images/load")
-  let res = await request(c, httpPOST, url, body = tarball)
+  let (res, body) = await request(c.httpclient, httpPOST, url, body = tarball)
   case res.statusCode:
   of 200:
     discard
   of 500:
-    raise newException(ServerError, res.body)
+    raise newException(ServerError, body)
   else:
-    raise newException(DockerError, res.body)
+    raise newException(DockerError, body)
 
 proc execCreate*(c: AsyncDocker; name: string;
                  attachStdin, attachStdout, attachStderr, tty = false;
@@ -2959,21 +2941,21 @@ proc execCreate*(c: AsyncDocker; name: string;
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/containers/" & name & "/exec")
   var headers = newStringTable({"Content-Type":"application/json"})
-  let res = await request(c, httpPOST, url, headers, $jBody)
+  let (res, body) = await request(c.httpclient, httpPOST, url, headers, $jBody)
   case res.statusCode:
   of 201:
     try:
-      result = parseJson(res.body)
+      result = parseJson(body)
     except:
       raise newException(ServerError, getCurrentExceptionMsg())
   of 404:
-    raise newException(NotFoundError, res.body)
+    raise newException(NotFoundError, body)
   of 409:
-    raise newException(ConflictError, res.body)
+    raise newException(ConflictError, body)
   of 500:
-    raise newException(ServerError, res.body)
+    raise newException(ServerError, body)
   else:
-    raise newException(DockerError, res.body)
+    raise newException(DockerError, body)
 
 proc execStart*(c: AsyncDocker; name: string; 
                 detach, tty = false;
@@ -2996,16 +2978,17 @@ proc execStart*(c: AsyncDocker; name: string;
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/exec/" & name & "/start")
   var headers = newStringTable({"Content-Type":"application/json"})
-  let res = await request(c, httpPOST, url, headers, $jBody, cb = cb)
-  case res.statusCode:
-  of 200:
-    discard
-  of 404:
-    raise newException(NotFoundError, res.body)
-  of 409:
-    raise newException(ConflictError, res.body)
+  await requestNative(c.httpclient, httpPOST, url, headers, $jBody)
+  let res = await responseProtocol(c.httpclient)
+  if res.statusCode == 200:
+    await responseBody(c.httpclient, res, cb = cb)
   else:
-    raise newException(DockerError, res.body)
+    let body = await responseBody(c.httpclient, res)
+    if res.statusCode == 404:
+      raise newException(NotFoundError, body)
+    if res.statusCode == 409:
+      raise newException(ConflictError, body)
+    raise newException(DockerError, body)
 
 proc execResize*(c: AsyncDocker; name: string; width, height: int) {.async.} =
   ## Resizes the `tty` session used by the `exec` command id. The unit
@@ -3026,14 +3009,14 @@ proc execResize*(c: AsyncDocker; name: string; width, height: int) {.async.} =
   add(queries, "h", $height)
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/exec/" & name & "/resize", queries)
-  let res = await request(c, httpPOST, url)
+  let (res, body) = await request(c.httpclient, httpPOST, url)
   case res.statusCode:
   of 201:
     discard
   of 404:
-    raise newException(NotFoundError, res.body)
+    raise newException(NotFoundError, body)
   else:
-    raise newException(DockerError, res.body)
+    raise newException(DockerError, body)
     
 proc execInspect*(c: AsyncDocker, name: string): Future[JsonNode] {.async.} =
   ## Resizes the `tty` session used by the `exec` command id. The unit
@@ -3153,19 +3136,19 @@ proc execInspect*(c: AsyncDocker, name: string): Future[JsonNode] {.async.} =
   ##   }
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/exec/" & name & "/json")
-  let res = await request(c, httpGET, url)
+  let (res, body) = await request(c.httpclient, httpGET, url)
   case res.statusCode:
   of 200:
     try:
-      result = parseJson(res.body)
+      result = parseJson(body)
     except:
       raise newException(ServerError, getCurrentExceptionMsg())
   of 404:
-    raise newException(NotFoundError, res.body)
+    raise newException(NotFoundError, body)
   of 500:
-    raise newException(ServerError, res.body)
+    raise newException(ServerError, body)
   else:
-    raise newException(DockerError, res.body)
+    raise newException(DockerError, body)
 
 proc volumes*(c: AsyncDocker, dangling = true): Future[JsonNode] {.async.} =
   ## List volumes. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#list-volumes>`_
@@ -3198,17 +3181,17 @@ proc volumes*(c: AsyncDocker, dangling = true): Future[JsonNode] {.async.} =
   add(queries, "filters", $JFilters)
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/volumes", queries)
-  let res = await request(c, httpGET, url)
+  let (res, body) = await request(c.httpclient, httpGET, url)
   case res.statusCode:
   of 200:
     try:
-      result = parseJson(res.body)
+      result = parseJson(body)
     except:
       raise newException(ServerError, getCurrentExceptionMsg())
   of 500:
-    raise newException(ServerError, res.body)
+    raise newException(ServerError, body)
   else:
-    raise newException(DockerError, res.body)
+    raise newException(DockerError, body)
 
 proc createVolume*(c: AsyncDocker, name: string, driver = "", 
                    driverOpts: seq[tuple[key, value: string]] = nil): Future[JsonNode] {.async.} =
@@ -3248,17 +3231,17 @@ proc createVolume*(c: AsyncDocker, name: string, driver = "",
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/volumes/create")
   var headers = newStringTable({"Content-Type":"application/json"})
-  let res = await request(c, httpPOST, url, headers, $jBody)
+  let (res, body) = await request(c.httpclient, httpPOST, url, headers, $jBody)
   case res.statusCode:
   of 201:
     try:
-      result = parseJson(res.body)
+      result = parseJson(body)
     except:
       raise newException(ServerError, getCurrentExceptionMsg())
   of 500:
-    raise newException(ServerError, res.body)
+    raise newException(ServerError, body)
   else:
-    raise newException(DockerError, res.body)
+    raise newException(DockerError, body)
 
 proc inspectVolume*(c: AsyncDocker, name: string): Future[JsonNode] {.async.} =
   ## Return low-level information on the volume `name`. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#inspect-a-volume>`_
@@ -3281,19 +3264,19 @@ proc inspectVolume*(c: AsyncDocker, name: string): Future[JsonNode] {.async.} =
   ##   }
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/volumes/" & name)
-  let res = await request(c, httpGET, url)
+  let (res, body) = await request(c.httpclient, httpGET, url)
   case res.statusCode:
   of 200:
     try:
-      result = parseJson(res.body)
+      result = parseJson(body)
     except:
       raise newException(ServerError, getCurrentExceptionMsg())
   of 404:
-    raise newException(NotFoundError, res.body)
+    raise newException(NotFoundError, body)
   of 500:
-    raise newException(ServerError, res.body)
+    raise newException(ServerError, body)
   else:
-    raise newException(DockerError, res.body)
+    raise newException(DockerError, body)
 
 proc rmVolume*(c: AsyncDocker, name: string) {.async.} =
   ## Instruct the driver to remove the volume `name`. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#inspect-a-volume>`_
@@ -3306,18 +3289,18 @@ proc rmVolume*(c: AsyncDocker, name: string) {.async.} =
   ## * ``name`` - The volume name or id.
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/volumes/" & name)
-  let res = await request(c, httpDELETE, url)
+  let (res, body) = await request(c.httpclient, httpDELETE, url)
   case res.statusCode:
   of 204:
     discard
   of 404:
-    raise newException(NotFoundError, res.body)
+    raise newException(NotFoundError, body)
   of 409:
-    raise newException(ConflictError, res.body)
+    raise newException(ConflictError, body)
   of 500:
-    raise newException(ServerError, res.body)
+    raise newException(ServerError, body)
   else:
-    raise newException(DockerError, res.body)
+    raise newException(DockerError, body)
 
 proc networks*(c: AsyncDocker, 
                nameFilters, idFilters, typeFilters: seq[string] = nil): 
@@ -3411,17 +3394,17 @@ proc networks*(c: AsyncDocker,
   add(queries, "filters", $jFilters)
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/networks", queries)
-  let res = await request(c, httpGET, url)
+  let (res, body) = await request(c.httpclient, httpGET, url)
   case res.statusCode:
   of 200:
     try:
-      result =  parseJson(res.body)
+      result =  parseJson(body)
     except:
       raise newException(ServerError, getCurrentExceptionMsg())
   of 500:
-    raise newException(ServerError, res.body)
+    raise newException(ServerError, body)
   else:
-    raise newException(DockerError, res.body)
+    raise newException(DockerError, body)
 
 proc inspectNetwork*(c: AsyncDocker, name: string): Future[JsonNode] {.async.} =
   ## Inspect network. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#inspect-network>`_
@@ -3468,17 +3451,17 @@ proc inspectNetwork*(c: AsyncDocker, name: string): Future[JsonNode] {.async.} =
   ##   }
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/networks/" & name)
-  let res = await request(c, httpGET, url)
+  let (res, body) = await request(c.httpclient, httpGET, url)
   case res.statusCode:
   of 200:
     try:
-      result = parseJson(res.body)
+      result = parseJson(body)
     except:
       raise newException(ServerError, getCurrentExceptionMsg())
   of 404:
-    raise newException(NotFoundError, res.body)
+    raise newException(NotFoundError, body)
   else:
-    raise newException(DockerError, res.body)
+    raise newException(DockerError, body)
 
 proc createNetwork*(c: AsyncDocker, name: string, driver = "bridge",
                     ipamDriver = "", 
@@ -3525,19 +3508,19 @@ proc createNetwork*(c: AsyncDocker, name: string, driver = "bridge",
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/networks/create")
   let headers = newStringTable({"Content-Type":"application/json"})
-  let res = await request(c, httpPOST, url, headers, $jBody)
+  let (res, body) = await request(c.httpclient, httpPOST, url, headers, $jBody)
   case res.statusCode:
   of 201:
     try:
-      result = parseJson(res.body)
+      result = parseJson(body)
     except:
       raise newException(ServerError, getCurrentExceptionMsg())
   of 404:
-    raise newException(NotFoundError, res.body)
+    raise newException(NotFoundError, body)
   of 500:
-    raise newException(ServerError, res.body)
+    raise newException(ServerError, body)
   else:
-    raise newException(DockerError, res.body)
+    raise newException(DockerError, body)
   
 proc connect*(c: AsyncDocker; name, container: string;
               iPv4Address, iPv6Address = "") {.async.} =
@@ -3562,16 +3545,16 @@ proc connect*(c: AsyncDocker; name, container: string;
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/networks/" & name & "/connect")
   let headers = newStringTable({"Content-Type":"application/json"})
-  let res = await request(c, httpPOST, url, headers, $jBody) 
+  let (res, body) = await request(c.httpclient, httpPOST, url, headers, $jBody) 
   case res.statusCode:
   of 200:
     discard
   of 404:
-    raise newException(NotFoundError, res.body)
+    raise newException(NotFoundError, body)
   of 500:
-    raise newException(ServerError, res.body)
+    raise newException(ServerError, body)
   else:
-    raise newException(DockerError, res.body)
+    raise newException(DockerError, body)
 
 proc disconnect*(c: AsyncDocker; name, container: string; force = false) {.async.} =
   ## Disconnects a container from a network. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#disconnect-a-container-from-a-network>`_
@@ -3590,16 +3573,16 @@ proc disconnect*(c: AsyncDocker; name, container: string; force = false) {.async
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/networks/" & name & "/disconnect")
   let headers = newStringTable({"Content-Type":"application/json"})
-  let res = await request(c, httpPOST, url, headers, $jBody)
+  let (res, body) = await request(c.httpclient, httpPOST, url, headers, $jBody)
   case res.statusCode:
   of 200:
     discard
   of 404:
-    raise newException(NotFoundError, res.body)
+    raise newException(NotFoundError, body)
   of 500:
-    raise newException(ServerError, res.body)
+    raise newException(ServerError, body)
   else:
-    raise newException(DockerError, res.body)
+    raise newException(DockerError, body)
 
 proc rmNetWork*(c: AsyncDocker, name: string) {.async.} =
   ## Instruct the driver to remove the network `name`. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#remove-a-network>`_
@@ -3611,17 +3594,17 @@ proc rmNetWork*(c: AsyncDocker, name: string) {.async.} =
   ## * ``name`` - The new network’s name or id.
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/networks/" & name)
-  let res = await request(c, httpDELETE, url)
+  let (res, body) = await request(c.httpclient, httpDELETE, url)
   echo res
   case res.statusCode:
   of 204:
     discard
   of 404:
-    raise newException(NotFoundError, res.body)
+    raise newException(NotFoundError, body)
   of 500:
-    raise newException(ServerError, res.body)
+    raise newException(ServerError, body)
   else:
-    raise newException(DockerError, res.body)
+    raise newException(DockerError, body)
 
 
 
