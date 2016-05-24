@@ -174,8 +174,9 @@ proc parseChunks(client: AsyncHttpClient, cb: Callback) {.async.} =
     var i = 0
     if chunkSizeStr == "":
       close(client)
-      raise newException(ProtocolError, 
-                         "connection was closed before full request has been made")
+      return
+      # raise newException(ProtocolError, 
+      #                    "connection was closed before full request has been made")
     while true:
       case chunkSizeStr[i]
       of '0'..'9':

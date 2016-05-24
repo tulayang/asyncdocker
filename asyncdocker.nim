@@ -174,13 +174,13 @@
 ##
 ## .. code-block:: nim
 ##
-##   proc logsCb(): proc(stream: int, log: string): Future[bool] = 
+##   proc logsCb(): VndCallback = 
 ##     var i = 0
-##     proc cb(stream: int, log: string): Future[bool] {.async.} = 
-##       if stream == 1:
-##         stdout.write("stdout: " & log)
-##       if stream == 2:
-##         stderr.write("stderr: " & log)
+##     proc cb(vnd: VndKind, data: string): Future[bool] {.async.} = 
+##       if vnd == vndStdout:
+##         stdout.write("stdout: " & data)
+##       if vnd == vndStderr:
+##         stderr.write("stderr: " & data)
 ##       echo i
 ##       if i == 5:
 ##        result = true ##   Close socket to stop receiving logs.
@@ -299,6 +299,13 @@ type
                                               ## response status code is `409`.
   ServerError* = object of DockerError        ## `Server error` from docker daemon,
                                               ## response status code is `500`.
+
+  VndKind* = enum
+    vndStdin, vndStdout, vndStderr
+
+  VndCallback* = proc(vnd: VndKind, data: string): Future[bool]
+  JsonCallback* = proc(data: JsonNode): Future[bool]
+
 const 
   dockerVersion* = "1.23"
   userAgent* = "Nim Docker client/0.0.1 (1.23)"
@@ -360,38 +367,37 @@ proc add(x: var JsonNode, key: string, list: seq[tuple[key, value: string]]) =
     add(j, i.key, %i.value)
   add(x, key, j)
 
-proc parseVnd(cb: proc(stream: int, payload: string): Future[bool]): Callback = 
-  var buff: array[8, char]
-  var buffPos = 0
-  var size = -1
-  var payload: string
-  var payloadPos = 0
-  var stream = 0
+proc parseVnd(chunk: string): tuple[vnd: VndKind, data: string] = 
+  let buff = chunk[0..7]
+  let size = ord(buff[4]) * int(pow(2,24)) + ord(buff[5]) * int(pow(2,16)) +
+             ord(buff[6]) * int(pow(2,8)) + ord(buff[7])
+  let vnd = ord(buff[0])
+  result.vnd = 
+    if vnd == 0: vndStdin
+    elif vnd == 1: vndStdout
+    else: vndStderr
+  result.data = chunk[8..8+size]
+
+proc vndCb(cb: VndCallback): Callback =
   proc callback(chunk: string): Future[bool] = 
-    var le = len(chunk)
-    var i = 0
-    while i < le:
-      if buffPos < 8:
-        buff[buffPos] = chunk[i]
-        inc(buffPos)
-        inc(i)
-      elif size == -1:
-        stream = int(buff[0])
-        size = int(buff[4]) * 16 * 16 * 16 + int(buff[5]) * 16 * 16 +
-               int(buff[6]) * 16 + int(buff[7])
-        payload = newString(size)
-        payloadPos = 0
-      elif payloadPos < size:
-        payload[payloadPos] = chunk[i]
-        inc(i)
-        inc(payloadPos)
-      else:
-        break
-    if payloadPos == size:
-      buffPos = 0
-      size = -1
-      result = cb(stream, payload)
-  return callback
+    var vnd: VndKind
+    var data: string
+    try:
+      (vnd, data) = parseVnd(chunk)
+    except:
+      raise newException(DockerError, "invalid vnd chunk")
+    cb(vnd, data)
+  result = callback
+
+proc jsonCb(cb: JsonCallback): Callback = 
+  proc callback(chunk: string): Future[bool] = 
+    var jdata: JsonNode
+    try:
+      jdata = parseJson(chunk)
+    except:
+      raise newException(DockerError, "invalid json chunk")
+    cb(jdata)
+  result = callback
 
 proc ps*(c: AsyncDocker, 
          all = false, 
@@ -1131,8 +1137,7 @@ proc top*(c: AsyncDocker, name: string, psArgs = "-ef"): Future[JsonNode] {.asyn
 
 proc logs*(c: AsyncDocker; name: string; 
            stdout = true; stderr, follow, timestamps = false; 
-           since = 0; tail = "all"; 
-           cb: proc(stream: int, log: string): Future[bool]) {.async.} = 
+           since = 0; tail = "all"; cb: VndCallback) {.async.} = 
   ## Get `stdout` and `stderr` logs from the container `name` (name or id).
   ## see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#get-container-logs>`_
   ##
@@ -1200,7 +1205,7 @@ proc logs*(c: AsyncDocker; name: string;
   await requestTo(c.httpclient, httpGET, url)
   let res = await recvHeaders(c.httpclient)
   if res.statusCode == 200:
-    await recvBody(c.httpclient, res, cb = parseVnd(cb))
+    await recvBody(c.httpclient, res, cb = vndCb(cb))
   else:
     let body = await recvBody(c.httpclient, res)
     if res.statusCode == 404:
@@ -1284,8 +1289,7 @@ proc exportContainer*(c: AsyncDocker, name: string,
       raise newException(ServerError, body)
     raise newException(DockerError, body)
 
-proc stats*(c: AsyncDocker, name: string, stream = false,
-            cb: proc(stat: JsonNode): Future[bool]) {.async.} =
+proc stats*(c: AsyncDocker, name: string, stream = false, cb: JsonCallback) {.async.} =
   ## Returns a live the container’s resource usage statistics.
   ## Note: this functionality currently only works when using the libcontainer 
   ## exec-driver. Note: not support stream mode currently. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#get-container-stats-based-on-resource-usage>`_
@@ -1383,10 +1387,15 @@ proc stats*(c: AsyncDocker, name: string, stream = false,
   ##    }
   ##   } 
   proc callback(chunk: string): Future[bool] = 
-    # There's an error `out of valid range` of `hierarchical_memory_limit`.
-    let data = replace(chunk, re("\"hierarchical_memory_limit\":(\\d+)"), 
-                                 "\"hierarchical_memory_limit\":\"$1\"")
-    result = cb(parseJson(data))
+    var stat: JsonNode
+    try:
+      # There's an error `out of valid range` of `hierarchical_memory_limit`.
+      let data = replace(chunk, re("\"hierarchical_memory_limit\":(\\d+)"), 
+                                   "\"hierarchical_memory_limit\":\"$1\"")
+      stat = parseJson(data)
+    except:
+      raise newException(DockerError, "invalid stat chunk")
+    result = cb(stat)
 
   var queries: seq[string] = @[]
   if stream:
@@ -1670,8 +1679,7 @@ proc unpause*(c: AsyncDocker, name: string) {.async.} =
     raise newException(DockerError, body)
 
 proc attach*(c: AsyncDocker; name: string; detachKeys: string = nil;
-             logs, stream, stdin, stdout, stderr = false;
-             cb: proc(stream: int, data: string): Future[bool]) {.async.} =
+             logs, stream, stdin, stdout, stderr = false; cb: VndCallback) {.async.} =
   ## Attach to the container `name`. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#attach-to-a-container>`_ 
   ##
   ## ``FutureError`` represents an exception, it may be `BadParameterError`, 
@@ -1703,8 +1711,10 @@ proc attach*(c: AsyncDocker; name: string; detachKeys: string = nil;
                      "/containers/" & name & "/attach", queries)
   await requestTo(c.httpclient, httpPOST, url)
   let res = await recvHeaders(c.httpclient)
+  echo url
+  echo res
   if res.statusCode in {101, 200}:
-    await recvBody(c.httpclient, res, cb = parseVnd(cb))
+    await recvBody(c.httpclient, res, cb = vndCb(cb))
   else:
     let body = await recvBody(c.httpclient, res)
     if res.statusCode == 400:
@@ -1882,7 +1892,7 @@ proc getArchive*(c: AsyncDocker, name: string, path: string,
   let res = await recvHeaders(c.httpclient)
   if res.statusCode == 200:
     await recvBody(c.httpclient, res, 
-                       cb = getArchiveCb(res.headers["X-Docker-Container-Path-Stat"], cb))
+                   cb = getArchiveCb(res.headers["X-Docker-Container-Path-Stat"], cb))
   else:
     let body = await recvBody(c.httpclient, res)
     if res.statusCode == 400:
@@ -2038,7 +2048,7 @@ proc build*(c: AsyncDocker; tarball: string;
             cpuperiod, cpuquota, shmsize = 0; 
             buildargs: seq[tuple[key: string, value: string]] = nil; 
             registryAuth: seq[tuple[url, username, password: string]] = nil;
-            cb: proc(state: JsonNode): Future[bool]) {.async.} =
+            cb: JsonCallback) {.async.} =
   ## Build an image from a Dockerfile. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#build-image-from-a-dockerfile>`_
   ##
   ## ``FutureError`` represents an exception, it may be ``ServerError`` or ``DockerError``.
@@ -2071,9 +2081,6 @@ proc build*(c: AsyncDocker; tarball: string;
   ## * ``shmsize`` - Size of /dev/shm in bytes. The size must be greater than 0. If omitted the system
   ##   uses 64MB.
   ## * ``registry`` - Registry auth config. 
-  proc callback(chunk: string): Future[bool] = 
-    cb(parseJson(chunk))
-
   var queries: seq[string] = @[]
   if dockerfile != nil and dockerfile != "":
     add(queries, "dockerfile", dockerfile)
@@ -2123,7 +2130,7 @@ proc build*(c: AsyncDocker; tarball: string;
   await requestTo(c.httpclient, httpPOST, url, headers, tarball)
   let res = await recvHeaders(c.httpclient)
   if res.statusCode == 200:
-    await recvBody(c.httpclient, res, cb = callback)
+    await recvBody(c.httpclient, res, cb = jsonCb(cb))
   else:
     let body = await recvBody(c.httpclient, res)
     if res.statusCode == 500:
@@ -2133,7 +2140,7 @@ proc build*(c: AsyncDocker; tarball: string;
 proc pull*(c: AsyncDocker; fromImage: string; 
            fromSrc, repo, tag: string = nil;
            registryAuth: tuple[username, password, email: string] = (nil, nil, nil);
-           cb: proc(state: JsonNode): Future[bool]) {.async.} =
+           cb: JsonCallback) {.async.} =
   ## Create an image either by pulling it from the registry or by importing it. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#create-an-image>`_
   ##
   ## ``FutureError`` represents an exception, it may be ``ServerError``
@@ -2171,7 +2178,7 @@ proc pull*(c: AsyncDocker; fromImage: string;
   await requestTo(c.httpclient, httpPOST, url)
   let res = await recvHeaders(c.httpclient)
   if res.statusCode == 200:
-    await recvBody(c.httpclient, res, cb = callback)
+    await recvBody(c.httpclient, res, cb = jsonCb(cb))
   else:
     let body = await recvBody(c.httpclient, res)
     if res.statusCode == 500:
@@ -2361,7 +2368,7 @@ proc history*(c: AsyncDocker, name: string): Future[JsonNode] {.async.} =
 
 proc push*(c: AsyncDocker, name: string, tag: string = nil,
            registryAuth: tuple[username, password, email: string] = (nil, nil, nil),
-           cb: proc(state: JsonNode): Future[bool]) {.async.} =
+           cb: JsonCallback) {.async.} =
   ## Push the image `name` on the registry. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#push-an-image-on-the-registry>`_
   ##
   ## If you wish to push an image on to a private registry, that image must already
@@ -2385,9 +2392,6 @@ proc push*(c: AsyncDocker, name: string, tag: string = nil,
   ##     {"status": "Pushing", "progress": "1/? (n/a)", "progressDetail": {"current": 1}}}
   ##     {"error": "Invalid..."}
   ##     ...
-  proc callback(chunk: string): Future[bool] = 
-    cb(parseJson(chunk))
-
   var queries: seq[string] = @[]
   if tag != nil:
     add(queries, "tag", tag)
@@ -2402,7 +2406,7 @@ proc push*(c: AsyncDocker, name: string, tag: string = nil,
   await requestTo(c.httpclient, httpPOST, url, headers)
   let res = await recvHeaders(c.httpclient)
   if res.statusCode == 200:
-    await recvBody(c.httpclient, res, cb = callback)
+    await recvBody(c.httpclient, res, cb = jsonCb(cb))
   else:
     let body = await recvBody(c.httpclient, res)
     if res.statusCode == 404:
@@ -2779,7 +2783,7 @@ proc commit*(c: AsyncDocker; container: string;
   
 proc events*(c: AsyncDocker; since, until = 0; 
              filters: seq[tuple[key, value: string]] = nil;
-             cb: proc(event: JsonNode): Future[bool]) {.async.} =
+             cb: JsonCallback) {.async.} =
   ## Get container events from docker, either in real time via streaming, or 
   ## via polling (using since). see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#monitor-docker-s-events>`_
   ##
@@ -2806,9 +2810,6 @@ proc events*(c: AsyncDocker; since, until = 0;
   ##     {"status":"create","id":"5745704abe9caa5","from":"busybox","time":1442421716,"timeNano":1442421716853979870}
   ##     {"status":"attach","id":"5745704abe9caa5","from":"busybox","time":1442421716,"timeNano":1442421716894759198}
   ##     {"status":"start","id":"5745704abe9caa5","from":"busybox","time":1442421716,"timeNano":1442421716983607193}
-  proc callback(chunk: string): Future[bool] = 
-    cb(parseJson(chunk))
-
   var queries: seq[string] = @[]
   add(queries, "since", $since)
   if until > 0:
@@ -2822,14 +2823,14 @@ proc events*(c: AsyncDocker; since, until = 0;
   await requestTo(c.httpclient, httpGET, url)
   let res = await recvHeaders(c.httpclient)
   if res.statusCode == 200:
-    await recvBody(c.httpclient, res, cb = callback)
+    await recvBody(c.httpclient, res, cb = jsonCb(cb))
   else:
     let body = await recvBody(c.httpclient, res)
     if res.statusCode == 500:
       raise newException(ServerError, body)
     raise newException(DockerError, body)
 
-proc get*(c: AsyncDocker, name: string, cb: proc(data: string): Future[bool]) {.async.} =
+proc get*(c: AsyncDocker, name: string, cb: Callback) {.async.} =
   ## Get a tarball containing all images and metadata for the repository
   ## specified by `name`. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#get-a-tarball-containing-all-images-in-a-repository>`_
   ##
@@ -2856,7 +2857,7 @@ proc get*(c: AsyncDocker, name: string, cb: proc(data: string): Future[bool]) {.
       raise newException(ServerError, body)
     raise newException(DockerError, body)
 
-proc get*(c: AsyncDocker, names: seq[string], cb: proc(data: string): Future[bool]) {.async.} =
+proc get*(c: AsyncDocker, names: seq[string], cb: Callback) {.async.} =
   ## Get a tarball containing all images and metadata for one or more repositories.
   ## see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#get-a-tarball-containing-all-images>`_
   ##
@@ -2959,7 +2960,7 @@ proc execCreate*(c: AsyncDocker; name: string;
 
 proc execStart*(c: AsyncDocker; name: string; 
                 detach, tty = false;
-                cb: proc(data: string): Future[bool]) {.async.} =
+                cb: VndCallback) {.async.} =
   ## Starts a previously set up `exec` instance `name`. If detach is true, this
   ## API returns after starting the `exec` command. Otherwise, this API sets
   ## up an interactive session with the `exec` command. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#exec-start>`_
@@ -2980,8 +2981,9 @@ proc execStart*(c: AsyncDocker; name: string;
   var headers = newStringTable({"Content-Type":"application/json"})
   await requestTo(c.httpclient, httpPOST, url, headers, $jBody)
   let res = await recvHeaders(c.httpclient)
+  echo res
   if res.statusCode == 200:
-    await recvBody(c.httpclient, res, cb = cb)
+    await recvBody(c.httpclient, res, cb = vndCb(cb))
   else:
     let body = await recvBody(c.httpclient, res)
     if res.statusCode == 404:

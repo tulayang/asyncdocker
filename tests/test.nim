@@ -4,20 +4,20 @@ const
   hostname = "127.0.0.1"
   port = Port(2375)
 
-proc logsCb(): proc(stream: int, log: string): Future[bool] = 
+proc logsCb(): VndCallback = 
   var i = 0
-  proc cb(stream: int, log: string): Future[bool] {.async.} = 
-    if stream == 1:
-      stdout.write("stdout: " & log)
-    if stream == 2:
-      stderr.write("stderr: " & log)
+  proc cb(vnd: VndKind, data: string): Future[bool] {.async.} = 
+    if vnd == vndStdout:
+      stdout.write("stdout: " & data)
+    if vnd == vndStderr:
+      stderr.write("stderr: " & data)
     echo i
     if i == 5:
      result = true # Close socket to stop receiving logs.
     inc(i)
   result = cb
 
-proc exportContainerCb(): proc(data: string): Future[bool] = 
+proc exportContainerCb(): Callback = 
   var j = 1
   proc cb(data: string): Future[bool] {.async.} = 
     echo data
@@ -26,7 +26,7 @@ proc exportContainerCb(): proc(data: string): Future[bool] =
     inc(j)
   result = cb
 
-proc statsCb(): proc(data: JsonNode): Future[bool] = 
+proc statsCb(): JsonCallback = 
   var n = 1
   proc cb(data: JsonNode): Future[bool] {.async.} = 
     echo $data & "\n"
@@ -35,16 +35,17 @@ proc statsCb(): proc(data: JsonNode): Future[bool] =
     inc(n)
   result = cb
 
-proc attachCb(): proc(stream: int, payload: string): Future[bool] = 
-  var m = 1
-  proc cb(stream: int, payload: string): Future[bool] {.async.} = 
-    if stream == 1:
-      stdout.write("stdout: " & payload)
-    if stream == 2:
-      stderr.write("stderr: " & payload)
-    if m == 5:
-      result = true # Close socket to stop receiving payloads.
-    inc(m)
+proc attachCb(): VndCallback = 
+  var i = 0
+  proc cb(vnd: VndKind, data: string): Future[bool] {.async.} = 
+    if vnd == vndStdout:
+      stdout.write("stdout: " & data)
+    if vnd == vndStderr:
+      stderr.write("stderr: " & data)
+    echo i
+    if i == 5:
+     result = true # Close socket to stop receiving logs.
+    inc(i)
   result = cb
 
 proc getArchiveCb(chunk: string, stat: JsonNode): Future[bool] {.async.} = 
@@ -53,16 +54,16 @@ proc getArchiveCb(chunk: string, stat: JsonNode): Future[bool] {.async.} =
 proc buildCb(state: JsonNode): Future[bool] {.async.} = 
   stdout.write(state["stream"].getStr())
 
-proc eventsCb(): proc(event: JsonNode): Future[bool] = 
+proc eventsCb(): JsonCallback = 
   var o = 1
-  proc cb(event: JsonNode): Future[bool] {.async.} = 
-    echo $event & "\n"
+  proc cb(data: JsonNode): Future[bool] {.async.} = 
+    echo $data & "\n"
     if o == 2:
       result = true
     inc(o)
   result = cb
 
-proc getCb(): proc(data: string): Future[bool] = 
+proc getCb(): Callback = 
   var a = 1
   proc cb(data: string): Future[bool] {.async.} = 
     echo data
@@ -71,7 +72,7 @@ proc getCb(): proc(data: string): Future[bool] =
     inc(a)
   result = cb
 
-proc getsCb(): proc(data: string): Future[bool] =
+proc getsCb(): Callback =
   var a = 1
   proc cb(data: string): Future[bool] {.async.} = 
     echo data
@@ -80,8 +81,17 @@ proc getsCb(): proc(data: string): Future[bool] =
     inc(a)
   result = cb
 
-proc execStartCb(data: string): Future[bool] {.async.} = 
-  echo "Date: ", data
+proc execStartCb(): VndCallback = 
+  var i = 0
+  proc cb(vnd: VndKind, data: string): Future[bool] {.async.} = 
+    if vnd == vndStdout:
+      stdout.write("stdout: " & data)
+    if vnd == vndStderr:
+      stderr.write("stderr: " & data)
+    if i == 5:
+     result = true # Close socket to stop receiving logs.
+    inc(i)
+  result = cb
 
 proc main() {.async.} =
   var docker = newAsyncDocker(hostname, port)
@@ -175,7 +185,8 @@ proc main() {.async.} =
   await docker.rename(name = "newhello", newname = "hello")
 
   echo "\n================= Attach Container =================\n"
-  await docker.attach("hello", stream = true, stdout = true, cb = attachCb())
+  await docker.attach("hello", stream = true, stdout = true, logs = true, stdin = true, cb = attachCb())
+  docker.close()
 
   echo "\n================= Retrieve Archive =================\n"
   var archive = await docker.retrieveArchive(name = "hello", path = "/home")
@@ -241,7 +252,7 @@ proc main() {.async.} =
                                      attachStderr = false, tty = false, cmd = @["date"])
   
   await docker.execStart(name = getStr(exec["Id"]), tty = true, 
-                         cb = execStartCb)
+                         cb = execStartCb())
 
   #await docker.execResize(name = exec["Id"].getStr(), width = 100, height =200)
 
