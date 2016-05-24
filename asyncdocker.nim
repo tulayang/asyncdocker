@@ -1197,12 +1197,12 @@ proc logs*(c: AsyncDocker; name: string;
   add(queries, "tail", tail)
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/containers/" & name & "/logs", queries)
-  await requestNative(c.httpclient, httpGET, url)
-  let res = await responseProtocol(c.httpclient)
+  await requestTo(c.httpclient, httpGET, url)
+  let res = await recvHeaders(c.httpclient)
   if res.statusCode == 200:
-    await responseBody(c.httpclient, res, cb = parseVnd(cb))
+    await recvBody(c.httpclient, res, cb = parseVnd(cb))
   else:
-    let body = await responseBody(c.httpclient, res)
+    let body = await recvBody(c.httpclient, res)
     if res.statusCode == 404:
       raise newException(NotFoundError, body)
     if res.statusCode == 500:
@@ -1272,12 +1272,12 @@ proc exportContainer*(c: AsyncDocker, name: string,
   ## * ``cb`` - Handles the data from docker daemon in streaming.
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/containers/" & name & "/export")
-  await requestNative(c.httpclient, httpGET, url)
-  let res = await responseProtocol(c.httpclient)
+  await requestTo(c.httpclient, httpGET, url)
+  let res = await recvHeaders(c.httpclient)
   if res.statusCode == 200:
-    await responseBody(c.httpclient, res, cb = cb)
+    await recvBody(c.httpclient, res, cb = cb)
   else:
-    let body = await responseBody(c.httpclient, res)
+    let body = await recvBody(c.httpclient, res)
     if res.statusCode == 404:
       raise newException(NotFoundError, body)
     if res.statusCode == 500:
@@ -1395,12 +1395,12 @@ proc stats*(c: AsyncDocker, name: string, stream = false,
     add(queries, "stream", "0") 
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/containers/" & name & "/stats", queries)
-  await requestNative(c.httpclient, httpGET, url)
-  let res = await responseProtocol(c.httpclient)
+  await requestTo(c.httpclient, httpGET, url)
+  let res = await recvHeaders(c.httpclient)
   if res.statusCode == 200:
-    await responseBody(c.httpclient, res, cb = callback)
+    await recvBody(c.httpclient, res, cb = callback)
   else:
-    let body = await responseBody(c.httpclient, res)
+    let body = await recvBody(c.httpclient, res)
     if res.statusCode == 404:
       raise newException(NotFoundError, body)
     if res.statusCode == 500:
@@ -1701,12 +1701,12 @@ proc attach*(c: AsyncDocker; name: string; detachKeys: string = nil;
     add(queries, "stderr", "1")
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/containers/" & name & "/attach", queries)
-  await requestNative(c.httpclient, httpPOST, url)
-  let res = await responseProtocol(c.httpclient)
+  await requestTo(c.httpclient, httpPOST, url)
+  let res = await recvHeaders(c.httpclient)
   if res.statusCode in {101, 200}:
-    await responseBody(c.httpclient, res, cb = parseVnd(cb))
+    await recvBody(c.httpclient, res, cb = parseVnd(cb))
   else:
-    let body = await responseBody(c.httpclient, res)
+    let body = await recvBody(c.httpclient, res)
     if res.statusCode == 400:
       raise newException(BadParameterError, body)
     if res.statusCode == 404:
@@ -1878,13 +1878,13 @@ proc getArchive*(c: AsyncDocker, name: string, path: string,
   add(queries, "path", path)
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/containers/" & name & "/archive", queries)
-  await requestNative(c.httpclient, httpGET, url)
-  let res = await responseProtocol(c.httpclient)
+  await requestTo(c.httpclient, httpGET, url)
+  let res = await recvHeaders(c.httpclient)
   if res.statusCode == 200:
-    await responseBody(c.httpclient, res, 
+    await recvBody(c.httpclient, res, 
                        cb = getArchiveCb(res.headers["X-Docker-Container-Path-Stat"], cb))
   else:
-    let body = await responseBody(c.httpclient, res)
+    let body = await recvBody(c.httpclient, res)
     if res.statusCode == 400:
       raise newException(BadParameterError, body)
     if res.statusCode == 404:
@@ -2120,12 +2120,12 @@ proc build*(c: AsyncDocker; tarball: string;
                                 "X-Registry-Config": encode($JRegistryAuth)})
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/build", queries)
-  await requestNative(c.httpclient, httpPOST, url, headers, tarball)
-  let res = await responseProtocol(c.httpclient)
+  await requestTo(c.httpclient, httpPOST, url, headers, tarball)
+  let res = await recvHeaders(c.httpclient)
   if res.statusCode == 200:
-    await responseBody(c.httpclient, res, cb = callback)
+    await recvBody(c.httpclient, res, cb = callback)
   else:
-    let body = await responseBody(c.httpclient, res)
+    let body = await recvBody(c.httpclient, res)
     if res.statusCode == 500:
       raise newException(ServerError, body)
     raise newException(DockerError, body)
@@ -2168,12 +2168,12 @@ proc pull*(c: AsyncDocker; fromImage: string;
   add(queries, "X-Registry-Auth", encode($JRegistryAuth))
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/images/create", queries)
-  await requestNative(c.httpclient, httpPOST, url)
-  let res = await responseProtocol(c.httpclient)
+  await requestTo(c.httpclient, httpPOST, url)
+  let res = await recvHeaders(c.httpclient)
   if res.statusCode == 200:
-    await responseBody(c.httpclient, res, cb = callback)
+    await recvBody(c.httpclient, res, cb = callback)
   else:
-    let body = await responseBody(c.httpclient, res)
+    let body = await recvBody(c.httpclient, res)
     if res.statusCode == 500:
       raise newException(ServerError, body)
     raise newException(DockerError, body)
@@ -2399,12 +2399,12 @@ proc push*(c: AsyncDocker, name: string, tag: string = nil,
   let headers = newStringTable({"X-Registry-Auth": encode($JRegistryAuth)})
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/images/" & name & "/push", queries)
-  await requestNative(c.httpclient, httpPOST, url, headers)
-  let res = await responseProtocol(c.httpclient)
+  await requestTo(c.httpclient, httpPOST, url, headers)
+  let res = await recvHeaders(c.httpclient)
   if res.statusCode == 200:
-    await responseBody(c.httpclient, res, cb = callback)
+    await recvBody(c.httpclient, res, cb = callback)
   else:
-    let body = await responseBody(c.httpclient, res)
+    let body = await recvBody(c.httpclient, res)
     if res.statusCode == 404:
       raise newException(NotFoundError, body)
     if res.statusCode == 500:
@@ -2819,12 +2819,12 @@ proc events*(c: AsyncDocker; since, until = 0;
       add(JFilters, i.key, %i.value)
     add(queries, "filters", $JFilters)
   let url = parseUri(c.scheme, c.hostname, c.port, "/events", queries) 
-  await requestNative(c.httpclient, httpGET, url)
-  let res = await responseProtocol(c.httpclient)
+  await requestTo(c.httpclient, httpGET, url)
+  let res = await recvHeaders(c.httpclient)
   if res.statusCode == 200:
-    await responseBody(c.httpclient, res, cb = callback)
+    await recvBody(c.httpclient, res, cb = callback)
   else:
-    let body = await responseBody(c.httpclient, res)
+    let body = await recvBody(c.httpclient, res)
     if res.statusCode == 500:
       raise newException(ServerError, body)
     raise newException(DockerError, body)
@@ -2846,12 +2846,12 @@ proc get*(c: AsyncDocker, name: string, cb: proc(data: string): Future[bool]) {.
   ##
   ## * ``name`` - The image name and tag (e.g. ubuntu:latest) or image id.
   let url = parseUri(c.scheme, c.hostname, c.port, "/images/" & name & "/get")
-  await requestNative(c.httpclient, httpGET, url)
-  let res = await responseProtocol(c.httpclient)
+  await requestTo(c.httpclient, httpGET, url)
+  let res = await recvHeaders(c.httpclient)
   if res.statusCode == 200:
-    await responseBody(c.httpclient, res, cb = cb)
+    await recvBody(c.httpclient, res, cb = cb)
   else:
-    let body = await responseBody(c.httpclient, res)
+    let body = await recvBody(c.httpclient, res)
     if res.statusCode == 500:
       raise newException(ServerError, body)
     raise newException(DockerError, body)
@@ -2876,12 +2876,12 @@ proc get*(c: AsyncDocker, names: seq[string], cb: proc(data: string): Future[boo
   for name in names:
     add(queries, "names", name)
   let url = parseUri(c.scheme, c.hostname, c.port, "/images/get", queries)
-  await requestNative(c.httpclient, httpGET, url)
-  let res = await responseProtocol(c.httpclient)
+  await requestTo(c.httpclient, httpGET, url)
+  let res = await recvHeaders(c.httpclient)
   if res.statusCode == 200:
-    await responseBody(c.httpclient, res, cb = cb)
+    await recvBody(c.httpclient, res, cb = cb)
   else:
-    let body = await responseBody(c.httpclient, res)
+    let body = await recvBody(c.httpclient, res)
     if res.statusCode == 500:
       raise newException(ServerError, body)
     raise newException(DockerError, body)
@@ -2978,12 +2978,12 @@ proc execStart*(c: AsyncDocker; name: string;
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/exec/" & name & "/start")
   var headers = newStringTable({"Content-Type":"application/json"})
-  await requestNative(c.httpclient, httpPOST, url, headers, $jBody)
-  let res = await responseProtocol(c.httpclient)
+  await requestTo(c.httpclient, httpPOST, url, headers, $jBody)
+  let res = await recvHeaders(c.httpclient)
   if res.statusCode == 200:
-    await responseBody(c.httpclient, res, cb = cb)
+    await recvBody(c.httpclient, res, cb = cb)
   else:
-    let body = await responseBody(c.httpclient, res)
+    let body = await recvBody(c.httpclient, res)
     if res.statusCode == 404:
       raise newException(NotFoundError, body)
     if res.statusCode == 409:

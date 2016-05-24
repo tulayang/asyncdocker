@@ -214,7 +214,7 @@ proc parseDockerVnd(client: AsyncHttpClient, cb: Callback) {.async.} =
       close(client)
       break
 
-proc responseProtocol*(client: AsyncHttpClient): Future[Response] {.async.} =
+proc recvHeaders*(client: AsyncHttpClient): Future[Response] {.async.} =
   var fullyRead = false
   var phase = rpProtocol
   result.headers = newStringTable(modeCaseInsensitive)
@@ -269,7 +269,7 @@ proc responseProtocol*(client: AsyncHttpClient): Future[Response] {.async.} =
     else:
       break
 
-proc responseBody*(client: AsyncHttpClient, res: Response, cb: Callback) {.async.} = 
+proc recvBody*(client: AsyncHttpClient, res: Response, cb: Callback) {.async.} = 
   if getOrDefault(res.headers, "Transfer-Encoding") == "chunked":
     await parseChunks(client, cb)
   elif getOrDefault(res.headers, "Content-Type") == "application/vnd.docker.raw-stream":
@@ -305,17 +305,17 @@ proc responseBody*(client: AsyncHttpClient, res: Response, cb: Callback) {.async
         close(client)
         discard await cb(body)
 
-proc responseBody*(client: AsyncHttpClient, res: Response): Future[string] {.async.} = 
+proc recvBody*(client: AsyncHttpClient, res: Response): Future[string] {.async.} = 
   var body = ""
   proc cb(chunk: string): Future[bool] = 
     result = newFuture[bool]("request")
     add(body, chunk)
     complete(result, false)
-  await responseBody(client, res, cb)
+  await recvBody(client, res, cb)
   shallowCopy(result, body)
 
-proc requestNative*(client: AsyncHttpClient, httpMethod: string, url: Uri, 
-                    headers: StringTableRef = nil, body: string = nil) {.async.} =
+proc requestTo*(client: AsyncHttpClient, httpMethod: string, url: Uri, 
+                headers: StringTableRef = nil, body: string = nil) {.async.} =
   if client.currentURL.hostname != url.hostname or
      client.currentURL.port != url.port or
      client.currentURL.scheme != url.scheme:
@@ -334,16 +334,16 @@ proc requestNative*(client: AsyncHttpClient, httpMethod: string, url: Uri,
   if body != nil and body != "":
     await send(client.socket, body)
 
-proc requestNative*(client: AsyncHttpClient, httpMethod: HttpMethod, url: Uri, 
-                    headers: StringTableRef = nil, body: string = nil): Future[void] =
-  requestNative(client, substr($httpMethod, len("http")), url, headers, body)
+proc requestTo*(client: AsyncHttpClient, httpMethod: HttpMethod, url: Uri, 
+                headers: StringTableRef = nil, body: string = nil): Future[void] =
+  requestTo(client, substr($httpMethod, len("http")), url, headers, body)
 
 proc request*(client: AsyncHttpClient, httpMethod: string, url: Uri, 
               headers: StringTableRef = nil, body: string = nil): 
              Future[tuple[res: Response, body: string]] {.async.} =
-  await requestNative(client, httpMethod, url, headers, body)
-  result.res = await responseProtocol(client)
-  result.body = await responseBody(client, result.res)
+  await requestTo(client, httpMethod, url, headers, body)
+  result.res = await recvHeaders(client)
+  result.body = await recvBody(client, result.res)
 
 proc request*(client: AsyncHttpClient, httpMethod: HttpMethod, url: Uri, 
               headers: StringTableRef = nil, body: string = nil): 
@@ -369,7 +369,7 @@ when isMainModule:
     echo "Got response body: ", body2
 
     let (res3, body3) = await request(client, "GET", parseUri("https://github.com/"), 
-                             newStringTable(modeCaseInsensitive))
+                                      newStringTable(modeCaseInsensitive))
     echo "Client connected: ", client.connected
     echo "Got response status code: ", res3.statusCode
     echo "Got response reason phrase: ", res3.reasonPhrase
