@@ -173,13 +173,13 @@ docker logs --follow hello
 equivalent to:
 
 ```nim
-proc logsCb(): proc(stream: int, log: string): Future[bool] = 
+proc logsCb(): VndCallback = 
   var i = 0
-  proc cb(stream: int, log: string): Future[bool] {.async.} = 
-    if stream == 1:
-      stdout.write("stdout: " & log)
-    if stream == 2:
-      stderr.write("stderr: " & log)
+  proc cb(vnd: VndKind, data: string): Future[bool] {.async.} = 
+    if vnd == vndStdout:
+      stdout.write("stdout: " & data)
+    if vnd == vndStderr:
+      stderr.write("stderr: " & data)
     echo i
     if i == 5:
      result = true # Close socket to stop receiving logs.
