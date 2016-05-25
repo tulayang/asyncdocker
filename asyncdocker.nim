@@ -1711,8 +1711,6 @@ proc attach*(c: AsyncDocker; name: string; detachKeys: string = nil;
                      "/containers/" & name & "/attach", queries)
   await requestTo(c.httpclient, httpPOST, url)
   let res = await recvHeaders(c.httpclient)
-  echo url
-  echo res
   if res.statusCode in {101, 200}:
     await recvBody(c.httpclient, res, cb = vndCb(cb))
   else:
@@ -2981,7 +2979,6 @@ proc execStart*(c: AsyncDocker; name: string;
   var headers = newStringTable({"Content-Type":"application/json"})
   await requestTo(c.httpclient, httpPOST, url, headers, $jBody)
   let res = await recvHeaders(c.httpclient)
-  echo res
   if res.statusCode == 200:
     await recvBody(c.httpclient, res, cb = vndCb(cb))
   else:
@@ -3597,7 +3594,6 @@ proc rmNetWork*(c: AsyncDocker, name: string) {.async.} =
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/networks/" & name)
   let (res, body) = await request(c.httpclient, httpDELETE, url)
-  echo res
   case res.statusCode:
   of 204:
     discard
@@ -3607,14 +3603,6 @@ proc rmNetWork*(c: AsyncDocker, name: string) {.async.} =
     raise newException(ServerError, body)
   else:
     raise newException(DockerError, body)
-
-
-
-
-
-
-
-
 
 
 
