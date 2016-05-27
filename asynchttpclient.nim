@@ -352,6 +352,8 @@ proc request*(client: AsyncHttpClient, httpMethod: string, httpUri: Uri,
   result.res = await recvHeaders(client)
   if result.res.statusCode == 100:
     result.res = await recvHeaders(client)
+  if result.res.statusCode == 417:
+    raise newException(RequestError, "expectation failed")
   result.body = await recvBody(client, result.res)
 
 proc request*(client: AsyncHttpClient, httpMethod: HttpMethod, httpUri: Uri, 
