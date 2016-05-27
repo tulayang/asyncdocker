@@ -1,3 +1,6 @@
 nimcache
 *~
 *.html
+asynchttpclient
+tests/test
+tests/tese_ssl

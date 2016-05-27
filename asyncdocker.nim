@@ -1202,7 +1202,8 @@ proc logs*(c: AsyncDocker; name: string;
   add(queries, "tail", tail)
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/containers/" & name & "/logs", queries)
-  await requestTo(c.httpclient, httpGET, url)
+  await newConnection(c.httpclient, url)
+  await sendHeaders(c.httpclient, httpGET, url)
   let res = await recvHeaders(c.httpclient)
   if res.statusCode == 200:
     await recvBody(c.httpclient, res, cb = vndCb(cb))
@@ -1277,7 +1278,8 @@ proc exportContainer*(c: AsyncDocker, name: string,
   ## * ``cb`` - Handles the data from docker daemon in streaming.
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/containers/" & name & "/export")
-  await requestTo(c.httpclient, httpGET, url)
+  await newConnection(c.httpclient, url)
+  await sendHeaders(c.httpclient, httpGET, url)
   let res = await recvHeaders(c.httpclient)
   if res.statusCode == 200:
     await recvBody(c.httpclient, res, cb = cb)
@@ -1404,7 +1406,8 @@ proc stats*(c: AsyncDocker, name: string, stream = false, cb: JsonCallback) {.as
     add(queries, "stream", "0") 
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/containers/" & name & "/stats", queries)
-  await requestTo(c.httpclient, httpGET, url)
+  await newConnection(c.httpclient, url)
+  await sendHeaders(c.httpclient, httpGET, url)
   let res = await recvHeaders(c.httpclient)
   if res.statusCode == 200:
     await recvBody(c.httpclient, res, cb = callback)
@@ -1709,7 +1712,8 @@ proc attach*(c: AsyncDocker; name: string; detachKeys: string = nil;
     add(queries, "stderr", "1")
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/containers/" & name & "/attach", queries)
-  await requestTo(c.httpclient, httpPOST, url)
+  await newConnection(c.httpclient, url)
+  await sendHeaders(c.httpclient, httpPOST, url)
   let res = await recvHeaders(c.httpclient)
   if res.statusCode in {101, 200}:
     await recvBody(c.httpclient, res, cb = vndCb(cb))
@@ -1886,7 +1890,8 @@ proc getArchive*(c: AsyncDocker, name: string, path: string,
   add(queries, "path", path)
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/containers/" & name & "/archive", queries)
-  await requestTo(c.httpclient, httpGET, url)
+  await newConnection(c.httpclient, url)
+  await sendHeaders(c.httpclient, httpGET, url)
   let res = await recvHeaders(c.httpclient)
   if res.statusCode == 200:
     await recvBody(c.httpclient, res, 
@@ -2125,7 +2130,9 @@ proc build*(c: AsyncDocker; tarball: string;
                                 "X-Registry-Config": encode($JRegistryAuth)})
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/build", queries)
-  await requestTo(c.httpclient, httpPOST, url, headers, tarball)
+  await newConnection(c.httpclient, url)
+  await sendHeaders(c.httpclient, httpPOST, url, headers, tarball)
+  await sendBody(c.httpclient, tarball)
   let res = await recvHeaders(c.httpclient)
   if res.statusCode == 200:
     await recvBody(c.httpclient, res, cb = jsonCb(cb))
@@ -2155,9 +2162,6 @@ proc pull*(c: AsyncDocker; fromImage: string;
   ## * ``tag`` - Tag or digest.
   ## * ``registry`` - Registry auth config.
   ## * ``cb`` - Handle the response state.
-  proc callback(chunk: string): Future[bool] = 
-    cb(parseJson(chunk))
-
   var queries: seq[string] = @[]
   add(queries, "fromImage", fromImage)
   if fromSrc != nil:
@@ -2173,7 +2177,8 @@ proc pull*(c: AsyncDocker; fromImage: string;
   add(queries, "X-Registry-Auth", encode($JRegistryAuth))
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/images/create", queries)
-  await requestTo(c.httpclient, httpPOST, url)
+  await newConnection(c.httpclient, url)
+  await sendHeaders(c.httpclient, httpPOST, url)
   let res = await recvHeaders(c.httpclient)
   if res.statusCode == 200:
     await recvBody(c.httpclient, res, cb = jsonCb(cb))
@@ -2401,7 +2406,8 @@ proc push*(c: AsyncDocker, name: string, tag: string = nil,
   let headers = newStringTable({"X-Registry-Auth": encode($JRegistryAuth)})
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/images/" & name & "/push", queries)
-  await requestTo(c.httpclient, httpPOST, url, headers)
+  await newConnection(c.httpclient, url)
+  await sendHeaders(c.httpclient, httpPOST, url, headers)
   let res = await recvHeaders(c.httpclient)
   if res.statusCode == 200:
     await recvBody(c.httpclient, res, cb = jsonCb(cb))
@@ -2818,7 +2824,8 @@ proc events*(c: AsyncDocker; since, until = 0;
       add(JFilters, i.key, %i.value)
     add(queries, "filters", $JFilters)
   let url = parseUri(c.scheme, c.hostname, c.port, "/events", queries) 
-  await requestTo(c.httpclient, httpGET, url)
+  await newConnection(c.httpclient, url)
+  await sendHeaders(c.httpclient, httpGET, url)
   let res = await recvHeaders(c.httpclient)
   if res.statusCode == 200:
     await recvBody(c.httpclient, res, cb = jsonCb(cb))
@@ -2845,7 +2852,8 @@ proc get*(c: AsyncDocker, name: string, cb: Callback) {.async.} =
   ##
   ## * ``name`` - The image name and tag (e.g. ubuntu:latest) or image id.
   let url = parseUri(c.scheme, c.hostname, c.port, "/images/" & name & "/get")
-  await requestTo(c.httpclient, httpGET, url)
+  await newConnection(c.httpclient, url)
+  await sendHeaders(c.httpclient, httpGET, url)
   let res = await recvHeaders(c.httpclient)
   if res.statusCode == 200:
     await recvBody(c.httpclient, res, cb = cb)
@@ -2875,7 +2883,8 @@ proc get*(c: AsyncDocker, names: seq[string], cb: Callback) {.async.} =
   for name in names:
     add(queries, "names", name)
   let url = parseUri(c.scheme, c.hostname, c.port, "/images/get", queries)
-  await requestTo(c.httpclient, httpGET, url)
+  await newConnection(c.httpclient, url)
+  await sendHeaders(c.httpclient, httpGET, url)
   let res = await recvHeaders(c.httpclient)
   if res.statusCode == 200:
     await recvBody(c.httpclient, res, cb = cb)
@@ -2974,10 +2983,13 @@ proc execStart*(c: AsyncDocker; name: string;
   var jBody = newJObject()
   add(jBody, "Detach", %detach)
   add(jBody, "Tty", %tty)
+  let reqBody = $jBody
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/exec/" & name & "/start")
   var headers = newStringTable({"Content-Type":"application/json"})
-  await requestTo(c.httpclient, httpPOST, url, headers, $jBody)
+  await newConnection(c.httpclient, url)
+  await sendHeaders(c.httpclient, httpPOST, url, headers, reqBody)
+  await sendBody(c.httpclient, reqBody)
   let res = await recvHeaders(c.httpclient)
   if res.statusCode == 200:
     await recvBody(c.httpclient, res, cb = vndCb(cb))

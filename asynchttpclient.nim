@@ -60,7 +60,7 @@ type
     socket: AsyncSocket
     connected: bool
     userAgent: string
-    currentURL: Uri
+    currentUri: Uri
     when defined(ssl):
       sslContext: net.SslContext
 
@@ -98,48 +98,48 @@ proc close*(client: AsyncHttpClient) =
     close(client.socket)
     client.connected = false
 
-proc connect(client: AsyncHttpClient, url: Uri) {.async.} =
+proc connect(client: AsyncHttpClient, httpUri: Uri) {.async.} =
   client.socket = newAsyncSocket()
   let port =
-    if url.port == "":
-      if toLower(url.scheme) == "https":
+    if httpUri.port == "":
+      if toLower(httpUri.scheme) == "https":
         Port(443)
       else:
         Port(80)
     else: 
-      Port(parseInt(url.port))
-  if toLower(url.scheme) == "https":
+      Port(parseInt(httpUri.port))
+  if toLower(httpUri.scheme) == "https":
     when defined(ssl):
       wrapSocket(client.sslContext, client.socket)
     else:
       raise newException(RequestError,
                          "SSL support is not available. Cannot connect over SSL.")
-  await connect(client.socket, url.hostname, port)
-  client.currentURL = url
+  await connect(client.socket, httpUri.hostname, port)
+  client.currentUri = httpUri
   client.connected = true
 
-proc generateHeaders(httpMethod: string, url: Uri,
+proc generateHeaders(httpMethod: string, httpUri: Uri,
                      headers: StringTableRef, body: string): string =
   result = ""
   add(result, httpMethod)
   add(result, ' ')
-  if url.path[0] != '/':
+  if httpUri.path[0] != '/':
     add(result, '/')
-  add(result, url.path)
-  if len(url.query) > 0:
+  add(result, httpUri.path)
+  if len(httpUri.query) > 0:
     add(result, "?")
-    add(result, url.query)
+    add(result, httpUri.query)
   add(result, " HTTP/1.1")
   add(result, "\c\L")
-  if url.port == "":
+  if httpUri.port == "":
     add(result, "Host: ")
-    add(result, url.hostname)
+    add(result, httpUri.hostname)
     add(result, "\c\L")
   else:
     add(result, "Host: ")
-    add(result, url.hostname)
+    add(result, httpUri.hostname)
     add(result, ":")
-    add(result, url.port)
+    add(result, httpUri.port)
     add(result, "\c\L")
   # add(result, "Connection: Keep-Alive")
   # add(result, "\c\L")
@@ -304,7 +304,7 @@ proc recvBody*(client: AsyncHttpClient, res: Response, cb: Callback) {.async.} =
             break
           add(body, buf)
         close(client)
-        discard await cb(body)
+        discard await cb(body)   
 
 proc recvBody*(client: AsyncHttpClient, res: Response): Future[string] {.async.} = 
   var body = ""
@@ -315,41 +315,49 @@ proc recvBody*(client: AsyncHttpClient, res: Response): Future[string] {.async.}
   await recvBody(client, res, cb)
   shallowCopy(result, body)
 
-proc requestTo*(client: AsyncHttpClient, httpMethod: string, url: Uri, 
-                headers: StringTableRef = nil, body: string = nil) {.async.} =
-  if client.currentURL.hostname != url.hostname or
-     client.currentURL.port != url.port or
-     client.currentURL.scheme != url.scheme:
+proc newConnection*(client: AsyncHttpClient, httpUri: Uri) {.async.} =
+  if client.currentUri.hostname != httpUri.hostname or
+     client.currentUri.port != httpUri.port or
+     client.currentUri.scheme != httpUri.scheme:
     if client.connected: 
       close(client)
     client.socket = newAsyncSocket()
-    await connect(client, url)
+    await connect(client, httpUri)
   elif not client.connected:
     client.socket = newAsyncSocket()
-    await connect(client, url)
+    await connect(client, httpUri)
+
+proc sendHeaders*(client: AsyncHttpClient, httpMethod: string, httpUri: Uri, 
+                  headers: StringTableRef = nil, body: string = nil) {.async.} = 
+  await newConnection(client, httpUri)
   if headers != nil and not hasKey(headers, "User-Agent") and 
      client.userAgent != nil and client.userAgent != "":
     headers["User-Agent"] = client.userAgent
-  var headerBytes = generateHeaders(httpMethod, url, headers, body)
-  await send(client.socket, headerBytes)
+  await send(client.socket, generateHeaders(httpMethod, httpUri, headers, body))
+
+proc sendHeaders*(client: AsyncHttpClient, httpMethod: HTTPMethod, httpUri: Uri, 
+                  headers: StringTableRef = nil, body: string = nil): Future[void] = 
+  sendHeaders(client, substr($httpMethod, len("http")), httpUri, headers, body)
+
+proc sendBody*(client: AsyncHttpClient, body: string) {.async.} = 
   if body != nil and body != "":
     await send(client.socket, body)
 
-proc requestTo*(client: AsyncHttpClient, httpMethod: HttpMethod, url: Uri, 
-                headers: StringTableRef = nil, body: string = nil): Future[void] =
-  requestTo(client, substr($httpMethod, len("http")), url, headers, body)
-
-proc request*(client: AsyncHttpClient, httpMethod: string, url: Uri, 
+proc request*(client: AsyncHttpClient, httpMethod: string, httpUri: Uri, 
               headers: StringTableRef = nil, body: string = nil): 
              Future[tuple[res: Response, body: string]] {.async.} =
-  await requestTo(client, httpMethod, url, headers, body)
+  await newConnection(client, httpUri)
+  await sendHeaders(client, httpMethod, httpUri, headers, body)
+  await sendBody(client, body)
   result.res = await recvHeaders(client)
+  if result.res.statusCode == 100:
+    result.res = await recvHeaders(client)
   result.body = await recvBody(client, result.res)
 
-proc request*(client: AsyncHttpClient, httpMethod: HttpMethod, url: Uri, 
+proc request*(client: AsyncHttpClient, httpMethod: HttpMethod, httpUri: Uri, 
               headers: StringTableRef = nil, body: string = nil): 
              Future[tuple[res: Response, body: string]] =
-  request(client, substr($httpMethod, len("http")), url, headers, body)
+  request(client, substr($httpMethod, len("http")), httpUri, headers, body)
 
 when isMainModule:
   proc main() {.async.} =
