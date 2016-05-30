@@ -31,7 +31,7 @@
 ## the functions a url with the ``https`` schema, for example: ``https://github.com/``,
 ## you also have to compile with ``ssl`` defined like so: ``nim c -d:ssl ...``.
 
-import asyncdispatch, asyncnet, strtabs, uri, strutils, parseutils, net
+import asyncdispatch, asyncnet, strtabs, uri, strutils, parseutils, net, math
 
 type
   ProtocolError* = object of IOError ## Exception that is raised when server does 
@@ -56,14 +56,6 @@ type
     httpCONNECT       ## Converts the request connection to a transparent
                       ## TCP/IP tunnel, usually used for proxies.
 
-  AsyncHttpClient* = ref object ## The asynchronous http/https client object.
-    socket: AsyncSocket
-    connected: bool
-    userAgent: string
-    currentUri: Uri
-    when defined(ssl):
-      sslContext: net.SslContext
-
   Response* = tuple
     version: string
     statusCode: int
@@ -72,6 +64,21 @@ type
 
   ResponsePhase = enum
     rpProtocol, rpHeaders, rpBody
+
+  ResponseBodyStatus* = enum
+    rbsData, rbsEnd, rbsClose
+
+  ResponseBodyKind* = enum
+    rbkEntire, rbkChunked, rbkDockerVnd
+
+  AsyncHttpClient* = ref object ## The asynchronous http/https client object.
+    socket: AsyncSocket
+    connected: bool
+    userAgent: string
+    currentUri: Uri
+    resKind: ResponseBodyKind 
+    when defined(ssl):
+      sslContext: net.SslContext
 
   Callback* = proc(chunk: string): Future[bool]
 
@@ -119,7 +126,7 @@ proc connect(client: AsyncHttpClient, httpUri: Uri) {.async.} =
   client.connected = true
 
 proc generateHeaders(httpMethod: string, httpUri: Uri,
-                     headers: StringTableRef, body: string): string =
+                     headers: StringTableRef): string =
   result = ""
   add(result, httpMethod)
   add(result, ' ')
@@ -143,11 +150,6 @@ proc generateHeaders(httpMethod: string, httpUri: Uri,
     add(result, "\c\L")
   # add(result, "Connection: Keep-Alive")
   # add(result, "\c\L")
-  if body != nil and body != "" and 
-     (headers == nil or not hasKey(headers, "Content-Length")):
-    add(result, "Content-Length: ")
-    add(result, $len(body))
-    add(result, "\c\L")
   if headers != nil:
     for key, val in headers:
       add(result, key)
@@ -155,6 +157,43 @@ proc generateHeaders(httpMethod: string, httpUri: Uri,
       add(result, val)
       add(result, "\c\L")
   add(result, "\c\L")
+
+proc newConnection*(client: AsyncHttpClient, httpUri: Uri) {.async.} =
+  if client.currentUri.hostname != httpUri.hostname or
+     client.currentUri.port != httpUri.port or
+     client.currentUri.scheme != httpUri.scheme:
+    if client.connected: 
+      close(client)
+    client.socket = newAsyncSocket()
+    await connect(client, httpUri)
+  elif not client.connected:
+    client.socket = newAsyncSocket()
+    await connect(client, httpUri)
+
+proc sendHeaders*(client: AsyncHttpClient, httpMethod: string, httpUri: Uri, 
+                  headers: StringTableRef = nil) {.async.} = 
+  await newConnection(client, httpUri)
+  if headers != nil and not hasKey(headers, "User-Agent") and 
+     client.userAgent != nil and client.userAgent != "":
+    headers["User-Agent"] = client.userAgent
+  await send(client.socket, generateHeaders(httpMethod, httpUri, headers))
+
+proc sendHeaders*(client: AsyncHttpClient, httpMethod: HttpMethod, httpUri: Uri, 
+                  headers: StringTableRef = nil): Future[void] = 
+  sendHeaders(client, substr($httpMethod, len("http")), httpUri, headers)
+
+proc sendBody*(client: AsyncHttpClient, body: string) {.async.} = 
+  if body != nil and body != "":
+    await send(client.socket, body)
+
+proc sendChunk*(client: AsyncHttpClient, data: string) {.async.} =
+  if data != nil and data != "":
+    let dataLen = len(data)
+    let sizeLen = Positive(floor(log2(toFloat(dataLen)) / 4 + 1))
+    await send(client.socket, toHex(BiggestInt(dataLen), sizeLen) & "\r\n" & data & "\r\n")
+
+proc endChunk*(client: AsyncHttpClient): Future[void] =
+  send(client.socket, "0\r\n\r\n")   
 
 proc recvFull(socket: AsyncSocket, size: int): Future[string] {.async.} =
   ## Ensures that all the data requested is read and returned.
@@ -166,54 +205,6 @@ proc recvFull(socket: AsyncSocket, size: int): Future[string] {.async.} =
     if data == "": 
       break # We've been disconnected.
     add(result, data)
-
-proc parseChunks(client: AsyncHttpClient, cb: Callback) {.async.} =
-  while true:
-    var chunkSize = 0
-    var chunkSizeStr = await recvLine(client.socket)
-    var i = 0
-    if chunkSizeStr == "":
-      close(client)
-      return
-      # raise newException(ProtocolError, 
-      #                    "connection was closed before full request has been made")
-    while true:
-      case chunkSizeStr[i]
-      of '0'..'9':
-        chunkSize = chunkSize shl 4 or (ord(chunkSizeStr[i]) - ord('0'))
-      of 'a'..'f':
-        chunkSize = chunkSize shl 4 or (ord(chunkSizeStr[i]) - ord('a') + 10)
-      of 'A'..'F':
-        chunkSize = chunkSize shl 4 or (ord(chunkSizeStr[i]) - ord('A') + 10)
-      of '\0':
-        break
-      of ';':
-        # http://tools.ietf.org/html/rfc2616#section-3.6.1
-        # We don't care about chunk-extensions.
-        break
-      else:
-        raise newException(ProtocolError, "Invalid chunk size: " & chunkSizeStr)
-      inc(i)
-    if chunkSize <= 0:
-      discard await recvFull(client.socket, 2) # Skip \c\L
-      break
-    let chunk = await recvFull(client.socket, chunkSize)
-    discard await recvFull(client.socket, 2) # Skip \c\L
-    # Streaming report the chunk data.
-    if await cb(chunk):
-      close(client)
-      break
-
-proc parseDockerVnd(client: AsyncHttpClient, cb: Callback) {.async.} =
-  var buf = ""
-  while true:
-    buf = await recvLine(client.socket)
-    if buf == "": 
-      close(client)
-      break
-    if await cb(buf & "\L"):
-      close(client)
-      break
 
 proc recvHeaders*(client: AsyncHttpClient): Future[Response] {.async.} =
   var fullyRead = false
@@ -269,92 +260,135 @@ proc recvHeaders*(client: AsyncHttpClient): Future[Response] {.async.} =
       result.headers[name] = strip(line[lineAt..^1])
     else:
       break
-
-proc recvBody*(client: AsyncHttpClient, res: Response, cb: Callback) {.async.} = 
-  if getOrDefault(res.headers, "Transfer-Encoding") == "chunked":
-    await parseChunks(client, cb)
-  elif getOrDefault(res.headers, "Content-Type") == "application/vnd.docker.raw-stream":
-    await parseDockerVnd(client, cb)
+  if getOrDefault(result.headers, "Transfer-Encoding") == "chunked":
+    client.resKind = rbkChunked
+  elif getOrDefault(result.headers, "Content-Type") == "application/vnd.docker.raw-stream":
+    client.resKind = rbkDockerVnd
   else:
+    client.resKind = rbkEntire
+
+proc parseChunk(client: AsyncHttpClient): 
+               Future[tuple[status: ResponseBodyStatus, data: string]] {.async.} =
+  result.status = rbsData
+  result.data = ""
+  var chunkSize = 0
+  var chunkSizeStr = await recvLine(client.socket)
+  var i = 0
+  if chunkSizeStr == "":
+    result.status = rbsClose
+    return
+    # raise newException(ProtocolError, 
+    #                    "connection was closed before full request has been made")
+  while true:
+    case chunkSizeStr[i]
+    of '0'..'9':
+      chunkSize = chunkSize shl 4 or (ord(chunkSizeStr[i]) - ord('0'))
+    of 'a'..'f':
+      chunkSize = chunkSize shl 4 or (ord(chunkSizeStr[i]) - ord('a') + 10)
+    of 'A'..'F':
+      chunkSize = chunkSize shl 4 or (ord(chunkSizeStr[i]) - ord('A') + 10)
+    of '\0':
+      break
+    of ';':
+      # http://tools.ietf.org/html/rfc2616#section-3.6.1
+      # We don't care about chunk-extensions.
+      break
+    else:
+      raise newException(ProtocolError, "Invalid chunk size: " & chunkSizeStr)
+    inc(i)
+  if chunkSize <= 0:
+    result.status = rbsEnd
+    discard await recvFull(client.socket, 2) # Skip \c\L
+    return
+  result.data = await recvFull(client.socket, chunkSize)
+  discard await recvFull(client.socket, 2) # Skip \c\L
+
+proc parseDockerVnd(client: AsyncHttpClient): 
+                   Future[tuple[status: ResponseBodyStatus, data: string]] {.async.} =
+  result.status = rbsData
+  result.data = await recvLine(client.socket)
+  if result.data == "": 
+    result.status = rbsClose
+  else:
+    result.data = result.data & "\L"
+
+proc recvBody*(client: AsyncHttpClient, res: Response): 
+              Future[tuple[status: ResponseBodyStatus, data: string]] {.async.} = 
+  if client.resKind == rbkChunked:
+    result = await parseChunk(client)
+  elif client.resKind == rbkDockerVnd:
+    result = await parseDockerVnd(client)
+  else:
+    result.status = rbsEnd
+    result.data = ""
     # -REGION- Content-Length
     # (http://tools.ietf.org/html/rfc2616#section-4.4) NR.3
     let contentLengthHeader = getOrDefault(res.headers, "Content-Length")
     if contentLengthHeader != "":
       let length = parseInt(contentLengthHeader)
       if length > 0:
-        let body = await recvFull(client.socket, length)
-        if body == "":
-          close(client)
+        result.data = await recvFull(client.socket, length)
+        if result.data == "":
+          result.status = rbsClose
           raise newException(ProtocolError, 
                              "got disconnected while trying to read body")
-        if len(body) != length:
-          close(client)
+        if len(result.data) != length:
+          result.status = rbsClose
           raise newException(ProtocolError, 
                              "received length doesn't match expected length, wanted " &
-                             $length & " got " & $len(body))
-        if await cb(body):
-          close(client)
+                             $length & " got " & $len(result.data))
     else:
       if getOrDefault(res.headers, "Connection") == "close":
-        var body = ""
         var buf = ""
         while true:
           buf = await recv(client.socket, BufferSize)
           if buf == "": 
             break
-          add(body, buf)
-        close(client)
-        discard await cb(body)   
+          add(result.data, buf)
+        result.status = rbsClose
 
-proc recvBody*(client: AsyncHttpClient, res: Response): Future[string] {.async.} = 
-  var body = ""
-  proc cb(chunk: string): Future[bool] = 
-    result = newFuture[bool]("request")
-    add(body, chunk)
-    complete(result, false)
-  await recvBody(client, res, cb)
-  shallowCopy(result, body)
-
-proc newConnection*(client: AsyncHttpClient, httpUri: Uri) {.async.} =
-  if client.currentUri.hostname != httpUri.hostname or
-     client.currentUri.port != httpUri.port or
-     client.currentUri.scheme != httpUri.scheme:
-    if client.connected: 
+proc recvFullbody*(client: AsyncHttpClient, res: Response): Future[string] {.async.} = 
+  result = ""
+  while true:
+    let (status, data) = await recvBody(client, res)
+    if data != "":
+      add(result, data)
+    case status:
+    of rbsClose:
       close(client)
-    client.socket = newAsyncSocket()
-    await connect(client, httpUri)
-  elif not client.connected:
-    client.socket = newAsyncSocket()
-    await connect(client, httpUri)
+      break
+    of rbsEnd:
+      break
+    of rbsData:
+      discard
 
-proc sendHeaders*(client: AsyncHttpClient, httpMethod: string, httpUri: Uri, 
-                  headers: StringTableRef = nil, body: string = nil) {.async.} = 
-  await newConnection(client, httpUri)
-  if headers != nil and not hasKey(headers, "User-Agent") and 
-     client.userAgent != nil and client.userAgent != "":
-    headers["User-Agent"] = client.userAgent
-  await send(client.socket, generateHeaders(httpMethod, httpUri, headers, body))
-
-proc sendHeaders*(client: AsyncHttpClient, httpMethod: HTTPMethod, httpUri: Uri, 
-                  headers: StringTableRef = nil, body: string = nil): Future[void] = 
-  sendHeaders(client, substr($httpMethod, len("http")), httpUri, headers, body)
-
-proc sendBody*(client: AsyncHttpClient, body: string) {.async.} = 
-  if body != nil and body != "":
-    await send(client.socket, body)
+proc recvFullbody*(client: AsyncHttpClient, res: Response, cb: Callback) {.async.} = 
+  while true:
+    let (status, data) = await recvBody(client, res)
+    if data != "" and await cb(data):
+      close(client)
+      break
+    case status:
+    of rbsClose:
+      close(client)
+      break
+    of rbsEnd:
+      break
+    of rbsData:
+      discard
 
 proc request*(client: AsyncHttpClient, httpMethod: string, httpUri: Uri, 
               headers: StringTableRef = nil, body: string = nil): 
              Future[tuple[res: Response, body: string]] {.async.} =
   await newConnection(client, httpUri)
-  await sendHeaders(client, httpMethod, httpUri, headers, body)
+  await sendHeaders(client, httpMethod, httpUri, headers)
   await sendBody(client, body)
   result.res = await recvHeaders(client)
   if result.res.statusCode == 100:
     result.res = await recvHeaders(client)
   if result.res.statusCode == 417:
     raise newException(RequestError, "expectation failed")
-  result.body = await recvBody(client, result.res)
+  result.body = await recvFullbody(client, result.res)
 
 proc request*(client: AsyncHttpClient, httpMethod: HttpMethod, httpUri: Uri, 
               headers: StringTableRef = nil, body: string = nil): 

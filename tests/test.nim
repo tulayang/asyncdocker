@@ -196,14 +196,14 @@ proc main() {.async.} =
   await docker.getArchive(name = "hello", path = "/home", cb = getArchiveCb)
 
   await docker.putArchive(name = "hello", path = "/home",
-                          archive = $(readFile(joinPath(getAppDir(), "put_archive.tar.gz"))))
+                          archivePath = joinPath(getAppDir(), "put_archive.tar.gz"))
 
   echo "\n======================== Images ======================\n"
   var images = await docker.images(all = true, danglingFilters = false)
   assert images.len() > 0
 
   echo "\n======================== Build =======================\n"
-  await docker.build($readFile(joinPath(getAppDir(), "build.tar.gz")),
+  await docker.build(joinPath(getAppDir(), "build.tar.gz"),
                      dockerfile = "Dockerfile",
                      cb = buildCb)
 

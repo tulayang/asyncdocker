@@ -258,7 +258,7 @@
 ##
 ## The Docker Swarm API is mostly compatible with the Docker Remote API. see `Docker Swarm Reference <https://docs.docker.com/swarm/swarm-api/>`_
 
-import asyncdispatch, asynchttpclient, strutils, json, strtabs, uri, net
+import asyncdispatch, asynchttpclient, strutils, json, strtabs, uri, net, streams
 import math, nre, base64
 export asynchttpclient
 
@@ -309,6 +309,7 @@ type
 const 
   dockerVersion* = "1.23"
   userAgent* = "Nim Docker client/0.0.1 (1.23)"
+  bufferSize* = 8192
 
 proc add(queries: var seq[string]; name, val: string) =
   add(queries, name & "=" & val)
@@ -746,33 +747,33 @@ proc create*(c: AsyncDocker;
   var queries: seq[string] = @[]
   if name != nil and name != "":
     add(queries, "name", name)
-  var jBody = newJObject()
-  add(jBody, "Image", %image)
-  add(jBody, "Cmd", cmd)
-  add(jBody, "Hostname", %hostname)
-  add(jBody, "Domainname", %domainname)
-  add(jBody, "User", %user)
-  add(jBody, "AttachStdin", %attachStdin)
-  add(jBody, "AttachStdout", %attachStdout)
-  add(jBody, "AttachStderr", %attachStderr)
-  add(jBody, "Tty", %tty)
-  add(jBody, "OpenStdin", %openStdin)
-  add(jBody, "StdinOnce", %stdinOnce)
-  add(jBody, "Env", env)
-  add(jBody, "Entrypoint", entrypoint)
-  add(jBody, "Labels", labels)
-  add(jBody, "WorkingDir", %workingDir)
-  add(jBody, "MacAddress", %macAddress)
-  add(jBody, "StopSignal", %stopSignal)
-  add(jBody, "NetworkDisabled", %networkDisabled)
+  var jbody = newJObject()
+  add(jbody, "Image", %image)
+  add(jbody, "Cmd", cmd)
+  add(jbody, "Hostname", %hostname)
+  add(jbody, "Domainname", %domainname)
+  add(jbody, "User", %user)
+  add(jbody, "AttachStdin", %attachStdin)
+  add(jbody, "AttachStdout", %attachStdout)
+  add(jbody, "AttachStderr", %attachStderr)
+  add(jbody, "Tty", %tty)
+  add(jbody, "OpenStdin", %openStdin)
+  add(jbody, "StdinOnce", %stdinOnce)
+  add(jbody, "Env", env)
+  add(jbody, "Entrypoint", entrypoint)
+  add(jbody, "Labels", labels)
+  add(jbody, "WorkingDir", %workingDir)
+  add(jbody, "MacAddress", %macAddress)
+  add(jbody, "StopSignal", %stopSignal)
+  add(jbody, "NetworkDisabled", %networkDisabled)
   var jExposedPorts = newJObject()
   for i in exposedPorts:
     add(jExposedPorts, i, newJObject())
-  add(jBody, "ExposedPorts", jExposedPorts)
+  add(jbody, "ExposedPorts", jExposedPorts)
   var jVolumes = newJObject()
   for i in volumes:
     add(jVolumes, i, newJObject())
-  add(jBody, "Volumes", jVolumes)
+  add(jbody, "Volumes", jVolumes)
   # <HostConfig>
   var jHostConfig = newJObject()
   add(jHostConfig, "Binds", binds)
@@ -878,14 +879,15 @@ proc create*(c: AsyncDocker;
   add(jLogConfig, "Config", jLogConfigCfg)
   add(jHostConfig, "LogConfig", jLogConfig)
   # </HostConfig>
-  add(jBody, "HostConfig", jHostConfig)
+  add(jbody, "HostConfig", jHostConfig)
   # echo "------------"
-  # echo pretty(jBody)
+  # echo pretty(jbody)
   # echo "------------"
+  let reqBody = $jbody
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/containers/create", queries)
-  let headers = newStringTable({"Content-Type":"application/json"})
-  let (res, body) = await request(c.httpclient, httpPOST, url, headers, $jBody)
+  let headers = newStringTable({"Content-Type": "application/json", "Content-Length": $(len(reqBody))})
+  let (res, body) = await request(c.httpclient, httpPOST, url, headers, reqBody)
   case res.statusCode:
   of 201:
     try:
@@ -1206,9 +1208,9 @@ proc logs*(c: AsyncDocker; name: string;
   await sendHeaders(c.httpclient, httpGET, url)
   let res = await recvHeaders(c.httpclient)
   if res.statusCode == 200:
-    await recvBody(c.httpclient, res, cb = vndCb(cb))
+    await recvFullbody(c.httpclient, res, cb = vndCb(cb))
   else:
-    let body = await recvBody(c.httpclient, res)
+    let body = await recvFullbody(c.httpclient, res)
     if res.statusCode == 404:
       raise newException(NotFoundError, body)
     if res.statusCode == 500:
@@ -1282,9 +1284,9 @@ proc exportContainer*(c: AsyncDocker, name: string,
   await sendHeaders(c.httpclient, httpGET, url)
   let res = await recvHeaders(c.httpclient)
   if res.statusCode == 200:
-    await recvBody(c.httpclient, res, cb = cb)
+    await recvFullbody(c.httpclient, res, cb = cb)
   else:
-    let body = await recvBody(c.httpclient, res)
+    let body = await recvFullbody(c.httpclient, res)
     if res.statusCode == 404:
       raise newException(NotFoundError, body)
     if res.statusCode == 500:
@@ -1410,9 +1412,9 @@ proc stats*(c: AsyncDocker, name: string, stream = false, cb: JsonCallback) {.as
   await sendHeaders(c.httpclient, httpGET, url)
   let res = await recvHeaders(c.httpclient)
   if res.statusCode == 200:
-    await recvBody(c.httpclient, res, cb = callback)
+    await recvFullbody(c.httpclient, res, cb = callback)
   else:
-    let body = await recvBody(c.httpclient, res)
+    let body = await recvFullbody(c.httpclient, res)
     if res.statusCode == 404:
       raise newException(NotFoundError, body)
     if res.statusCode == 500:
@@ -1570,31 +1572,32 @@ proc update*(c: AsyncDocker; name: string;
   ##   {
   ##     "Warnings": []
   ##   }
-  var jBody = newJObject()
+  var jbody = newJObject()
   if blkioWeight > 0:
-    add(jBody, "BlkioWeight", %blkioWeight)
+    add(jbody, "BlkioWeight", %blkioWeight)
   if cpuShares > 0:
-    add(jBody, "CpuShares", %cpuShares)
+    add(jbody, "CpuShares", %cpuShares)
   if cpuPeriod > 0:
-    add(jBody, "CpuPeriod", %cpuPeriod)
+    add(jbody, "CpuPeriod", %cpuPeriod)
   if cpuQuota > 0:
-    add(jBody, "CpuQuota", %cpuQuota)
+    add(jbody, "CpuQuota", %cpuQuota)
   if cpusetCpus != nil and cpusetCpus != "":
-    add(jBody, "CpusetCpus", %cpusetCpus)
+    add(jbody, "CpusetCpus", %cpusetCpus)
   if cpusetMems != nil and cpusetMems != "":
-    add(jBody, "CpusetMems", %cpusetMems)
+    add(jbody, "CpusetMems", %cpusetMems)
   if memory > 0:
-    add(jBody, "Memory", %memory)
+    add(jbody, "Memory", %memory)
   if memorySwap > 0:
-    add(jBody, "MemorySwap", %memorySwap)
+    add(jbody, "MemorySwap", %memorySwap)
   if memoryReservation > 0:
-    add(jBody, "MemoryReservation", %memoryReservation)
+    add(jbody, "MemoryReservation", %memoryReservation)
   if kernelMemory > 0:
-    add(jBody, "KernelMemory", %kernelMemory)
+    add(jbody, "KernelMemory", %kernelMemory)
+  let reqBody = $jbody
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/containers/" & name & "/update")
-  let headers = newStringTable({"Content-Type":"application/json"})
-  let (res, body) = await request(c.httpclient, httpPOST, url, headers, $jBody)
+  let headers = newStringTable({"Content-Type": "application/json", "Content-Length": $(len(reqBody))})
+  let (res, body) = await request(c.httpclient, httpPOST, url, headers, reqBody)
   case res.statusCode:
   of 200:
     try:
@@ -1716,9 +1719,9 @@ proc attach*(c: AsyncDocker; name: string; detachKeys: string = nil;
   await sendHeaders(c.httpclient, httpPOST, url)
   let res = await recvHeaders(c.httpclient)
   if res.statusCode in {101, 200}:
-    await recvBody(c.httpclient, res, cb = vndCb(cb))
+    await recvFullbody(c.httpclient, res, cb = vndCb(cb))
   else:
-    let body = await recvBody(c.httpclient, res)
+    let body = await recvFullbody(c.httpclient, res)
     if res.statusCode == 400:
       raise newException(BadParameterError, body)
     if res.statusCode == 404:
@@ -1894,10 +1897,10 @@ proc getArchive*(c: AsyncDocker, name: string, path: string,
   await sendHeaders(c.httpclient, httpGET, url)
   let res = await recvHeaders(c.httpclient)
   if res.statusCode == 200:
-    await recvBody(c.httpclient, res, 
+    await recvFullbody(c.httpclient, res, 
                    cb = getArchiveCb(res.headers["X-Docker-Container-Path-Stat"], cb))
   else:
-    let body = await recvBody(c.httpclient, res)
+    let body = await recvFullbody(c.httpclient, res)
     if res.statusCode == 400:
       raise newException(BadParameterError, body)
     if res.statusCode == 404:
@@ -1906,7 +1909,7 @@ proc getArchive*(c: AsyncDocker, name: string, path: string,
       raise newException(ServerError, body)
     raise newException(DockerError, body)
 
-proc putArchive*(c: AsyncDocker, name: string, path: string, archive: string,
+proc putArchive*(c: AsyncDocker, name: string, path: string, archivePath: string,
                  noOverwriteDirNonDir = false) {.async.} =  
   ## Upload a tar archive to be extracted to a path in the filesystem of container `name`. see `Docker Reference <https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#extract-an-archive-of-files-or-folders-to-a-directory-in-a-container`_
   ## 
@@ -1930,7 +1933,7 @@ proc putArchive*(c: AsyncDocker, name: string, path: string, archive: string,
   ## * ``noOverwriteDirNonDir`` - If `true` then it will be an error if unpacking the
   ##    given content would cause an existing directory to be replaced with a 
   ##    non-directory and vice versa.
-  ## * ``archive`` - The tar archive.
+  ## * ``archivePath`` - The tar archive path.
   ##
   ## Result is a JSON object, the internal members of which depends on the version of your docker engine. For example:
   ##
@@ -1949,20 +1952,30 @@ proc putArchive*(c: AsyncDocker, name: string, path: string, archive: string,
     add(queries, "noOverwriteDirNonDir", "1")
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/containers/" & name & "/archive", queries)
-  let headers = newStringTable({"Content-Type":"application/x-tar"})
-  let (res, body) = await request(c.httpclient, httpPUT, url, headers, archive)
-  case res.statusCode:
-  of 200:
-    discard
-  of 400:
-    raise newException(BadParameterError, body)
-  of 403:
-    raise newException(ForbiddenError, body)
-  of 404:
-    raise newException(NotFoundError, body)
-  of 500:
-    raise newException(ServerError, body)
+  let headers = newStringTable({"Content-Type": "application/x-tar", 
+                                "Transfer-Encoding": "chunked"})
+  await newConnection(c.httpclient, url)
+  await sendHeaders(c.httpclient, httpPUT, url, headers)
+  var stream = newFileStream(archivePath, fmRead)
+  while not atEnd(stream):
+    await sendChunk(c.httpclient, readStr(stream, bufferSize))
+    flush(stream)
+    # TODO: cb(upload state)
+  close(stream)
+  await endChunk(c.httpclient)
+  let res = await recvHeaders(c.httpclient)
+  if res.statusCode == 200:
+    discard await recvFullbody(c.httpclient, res)
   else:
+    let body = await recvFullbody(c.httpclient, res)
+    if res.statusCode == 400:
+      raise newException(BadParameterError, body)
+    if res.statusCode == 403:
+      raise newException(ForbiddenError, body)
+    if res.statusCode == 404:
+      raise newException(NotFoundError, body)
+    if res.statusCode == 500:
+      raise newException(ServerError, body)
     raise newException(DockerError, body)
 
 proc images*(c: AsyncDocker; all, digests = false; 
@@ -2044,7 +2057,7 @@ proc images*(c: AsyncDocker; all, digests = false;
   else:
     raise newException(DockerError, body)
 
-proc build*(c: AsyncDocker; tarball: string;
+proc build*(c: AsyncDocker; tarballPath: string;
             dockerfile, t, remote: string = nil; 
             q, nocache, pull, forcerm = false; rm = true;
             memory = 0; memswap = -1; cpushares, cpusetcpus: string = nil;
@@ -2058,7 +2071,7 @@ proc build*(c: AsyncDocker; tarball: string;
   ##
   ## Request parameters:
   ##
-  ## * ``tarball`` - The input stream must be a tar archive compressed with one of the 
+  ## * ``tarballPath`` - The input stream must be a tar archive compressed with one of the 
   ##   following algorithms: identity (no compression), gzip, bzip2, xz.
   ## * ``dockerfile`` - Path within the build context to the Dockerfile. This is ignored if 
   ##   ``remote`` is specified and points to an individual filename.
@@ -2127,17 +2140,24 @@ proc build*(c: AsyncDocker; tarball: string;
       add(JRegistryAuth["i.url"], "username", %i.username)
       add(JRegistryAuth["i.url"], "password", %i.password)
   let headers = newStringTable({"Content-type": "application/tar", 
+                                "Transfer-Encoding": "chunked",
                                 "X-Registry-Config": encode($JRegistryAuth)})
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/build", queries)
   await newConnection(c.httpclient, url)
-  await sendHeaders(c.httpclient, httpPOST, url, headers, tarball)
-  await sendBody(c.httpclient, tarball)
+  await sendHeaders(c.httpclient, httpPOST, url, headers)
+  var stream = newFileStream(tarballPath, fmRead)
+  while not atEnd(stream):
+    await sendChunk(c.httpclient, readStr(stream, bufferSize))
+    flush(stream)
+    # TODO: cb(upload state)
+  close(stream)
+  await endChunk(c.httpclient)
   let res = await recvHeaders(c.httpclient)
   if res.statusCode == 200:
-    await recvBody(c.httpclient, res, cb = jsonCb(cb))
+    await recvFullbody(c.httpclient, res, cb = jsonCb(cb))
   else:
-    let body = await recvBody(c.httpclient, res)
+    let body = await recvFullbody(c.httpclient, res)
     if res.statusCode == 500:
       raise newException(ServerError, body)
     raise newException(DockerError, body)
@@ -2181,9 +2201,9 @@ proc pull*(c: AsyncDocker; fromImage: string;
   await sendHeaders(c.httpclient, httpPOST, url)
   let res = await recvHeaders(c.httpclient)
   if res.statusCode == 200:
-    await recvBody(c.httpclient, res, cb = jsonCb(cb))
+    await recvFullbody(c.httpclient, res, cb = jsonCb(cb))
   else:
-    let body = await recvBody(c.httpclient, res)
+    let body = await recvFullbody(c.httpclient, res)
     if res.statusCode == 500:
       raise newException(ServerError, body)
     raise newException(DockerError, body)
@@ -2410,9 +2430,9 @@ proc push*(c: AsyncDocker, name: string, tag: string = nil,
   await sendHeaders(c.httpclient, httpPOST, url, headers)
   let res = await recvHeaders(c.httpclient)
   if res.statusCode == 200:
-    await recvBody(c.httpclient, res, cb = jsonCb(cb))
+    await recvFullbody(c.httpclient, res, cb = jsonCb(cb))
   else:
-    let body = await recvBody(c.httpclient, res)
+    let body = await recvFullbody(c.httpclient, res)
     if res.statusCode == 404:
       raise newException(NotFoundError, body)
     if res.statusCode == 500:
@@ -2557,15 +2577,16 @@ proc auth*(c: AsyncDocker; username, password: string;
   ## 
   ## ``FutureError`` represents an exception, it may be ``ServerError``, 
   ## or `DockerError`.
-  let jBody = %*{
+  let jbody = %*{
     "username": username,
     "password": password,
     "email": email,
     "serveraddress": serveraddress
   }
+  let reqBody = $jbody
   let url = parseUri(c.scheme, c.hostname, c.port, "/auth")
-  let headers = newStringTable({"Content-Type":"application/json"})
-  let (res, body) = await request(c.httpclient, httpPOST, url, headers, $jBody)
+  let headers = newStringTable({"Content-Type": "application/json", "Content-Length": $(len(reqBody))})
+  let (res, body) = await request(c.httpclient, httpPOST, url, headers, reqBody)
   case res.statusCode:
   of 200, 204:
     try:
@@ -2746,32 +2767,33 @@ proc commit*(c: AsyncDocker; container: string;
     add(queries, "pause", "1")
   if changes != nil and changes != "":
     add(queries, "changes", changes)
-  var jBody = newJObject()
-  add(jBody, "Hostname", %hostname)
-  add(jBody, "Domainname", %domainname)
-  add(jBody, "User", %user)
-  add(jBody, "AttachStdin", %attachStdin)
-  add(jBody, "AttachStdout", %attachStdout)
-  add(jBody, "AttachStderr", %attachStderr)
-  add(jBody, "Tty", %tty)
-  add(jBody, "OpenStdin", %openStdin)
-  add(jBody, "StdinOnce", %stdinOnce)
-  add(jBody, "Env", env)
-  add(jBody, "Cmd", cmd)
-  add(jBody, "Labels", labels)
-  add(jBody, "WorkingDir", %workingDir)
-  add(jBody, "NetworkDisabled", %networkDisabled)
+  var jbody = newJObject()
+  add(jbody, "Hostname", %hostname)
+  add(jbody, "Domainname", %domainname)
+  add(jbody, "User", %user)
+  add(jbody, "AttachStdin", %attachStdin)
+  add(jbody, "AttachStdout", %attachStdout)
+  add(jbody, "AttachStderr", %attachStderr)
+  add(jbody, "Tty", %tty)
+  add(jbody, "OpenStdin", %openStdin)
+  add(jbody, "StdinOnce", %stdinOnce)
+  add(jbody, "Env", env)
+  add(jbody, "Cmd", cmd)
+  add(jbody, "Labels", labels)
+  add(jbody, "WorkingDir", %workingDir)
+  add(jbody, "NetworkDisabled", %networkDisabled)
   var jExposedPorts = newJObject()
   for i in exposedPorts:
     add(jExposedPorts, i, newJObject())
-  add(jBody, "ExposedPorts", jExposedPorts)
+  add(jbody, "ExposedPorts", jExposedPorts)
   var jVolumes = newJObject()
   for i in volumes:
     add(jVolumes, i, newJObject())
-  add(jBody, "Volumes", jVolumes)
+  add(jbody, "Volumes", jVolumes)
+  let reqBody = $jbody
   let url = parseUri(c.scheme, c.hostname, c.port, "/commit", queries)
-  let headers = newStringTable({"Content-Type":"application/json"})
-  let (res, body) = await request(c.httpclient, httpPOST, url, headers, $jBody)
+  let headers = newStringTable({"Content-Type": "application/json", "Content-Length": $(len(reqBody))})
+  let (res, body) = await request(c.httpclient, httpPOST, url, headers, reqBody)
   case res.statusCode:
   of 201:
     try:
@@ -2828,9 +2850,9 @@ proc events*(c: AsyncDocker; since, until = 0;
   await sendHeaders(c.httpclient, httpGET, url)
   let res = await recvHeaders(c.httpclient)
   if res.statusCode == 200:
-    await recvBody(c.httpclient, res, cb = jsonCb(cb))
+    await recvFullbody(c.httpclient, res, cb = jsonCb(cb))
   else:
-    let body = await recvBody(c.httpclient, res)
+    let body = await recvFullbody(c.httpclient, res)
     if res.statusCode == 500:
       raise newException(ServerError, body)
     raise newException(DockerError, body)
@@ -2856,9 +2878,9 @@ proc get*(c: AsyncDocker, name: string, cb: Callback) {.async.} =
   await sendHeaders(c.httpclient, httpGET, url)
   let res = await recvHeaders(c.httpclient)
   if res.statusCode == 200:
-    await recvBody(c.httpclient, res, cb = cb)
+    await recvFullbody(c.httpclient, res, cb = cb)
   else:
-    let body = await recvBody(c.httpclient, res)
+    let body = await recvFullbody(c.httpclient, res)
     if res.statusCode == 500:
       raise newException(ServerError, body)
     raise newException(DockerError, body)
@@ -2887,9 +2909,9 @@ proc get*(c: AsyncDocker, names: seq[string], cb: Callback) {.async.} =
   await sendHeaders(c.httpclient, httpGET, url)
   let res = await recvHeaders(c.httpclient)
   if res.statusCode == 200:
-    await recvBody(c.httpclient, res, cb = cb)
+    await recvFullbody(c.httpclient, res, cb = cb)
   else:
-    let body = await recvBody(c.httpclient, res)
+    let body = await recvFullbody(c.httpclient, res)
     if res.statusCode == 500:
       raise newException(ServerError, body)
     raise newException(DockerError, body)
@@ -2939,17 +2961,18 @@ proc execCreate*(c: AsyncDocker; name: string;
   ##     "Id": "f90e34656806",
   ##     "Warnings":[]
   ##   }
-  var jBody = newJObject()
-  add(jBody, "AttachStdin", %attachStdin)
-  add(jBody, "AttachStdout", %attachStdout)
-  add(jBody, "AttachStderr", %attachStderr)
-  add(jBody, "Tty", %tty)
-  add(jBody, "DetachKeys", %detachKeys)
-  add(jBody, "Cmd", cmd)
+  var jbody = newJObject()
+  add(jbody, "AttachStdin", %attachStdin)
+  add(jbody, "AttachStdout", %attachStdout)
+  add(jbody, "AttachStderr", %attachStderr)
+  add(jbody, "Tty", %tty)
+  add(jbody, "DetachKeys", %detachKeys)
+  add(jbody, "Cmd", cmd)
+  let reqBody = $jbody
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/containers/" & name & "/exec")
-  var headers = newStringTable({"Content-Type":"application/json"})
-  let (res, body) = await request(c.httpclient, httpPOST, url, headers, $jBody)
+  var headers = newStringTable({"Content-Type": "application/json", "Content-Length": $(len(reqBody))})
+  let (res, body) = await request(c.httpclient, httpPOST, url, headers, reqBody)
   case res.statusCode:
   of 201:
     try:
@@ -2980,21 +3003,21 @@ proc execStart*(c: AsyncDocker; name: string;
   ## * ``name`` - The exec instance id.
   ## * ``detach`` - Detach from the exec command.
   ## * ``tty`` - Boolean value to allocate a pseudo-TTY.
-  var jBody = newJObject()
-  add(jBody, "Detach", %detach)
-  add(jBody, "Tty", %tty)
-  let reqBody = $jBody
+  var jbody = newJObject()
+  add(jbody, "Detach", %detach)
+  add(jbody, "Tty", %tty)
+  let reqBody = $jbody
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/exec/" & name & "/start")
-  var headers = newStringTable({"Content-Type":"application/json"})
+  var headers = newStringTable({"Content-Type": "application/json", "Content-Length": $(len(reqBody))})
   await newConnection(c.httpclient, url)
-  await sendHeaders(c.httpclient, httpPOST, url, headers, reqBody)
+  await sendHeaders(c.httpclient, httpPOST, url, headers)
   await sendBody(c.httpclient, reqBody)
   let res = await recvHeaders(c.httpclient)
   if res.statusCode == 200:
-    await recvBody(c.httpclient, res, cb = vndCb(cb))
+    await recvFullbody(c.httpclient, res, cb = vndCb(cb))
   else:
-    let body = await recvBody(c.httpclient, res)
+    let body = await recvFullbody(c.httpclient, res)
     if res.statusCode == 404:
       raise newException(NotFoundError, body)
     if res.statusCode == 409:
@@ -3235,14 +3258,15 @@ proc createVolume*(c: AsyncDocker, name: string, driver = "",
   ##   {
   ##     "Name": "tardis"
   ##   }
-  var jBody = newJObject()
-  add(jBody, "Name", %name)
-  add(jBody, "Driver", %driver)
-  add(jBody, "DriverOpts", driverOpts)
+  var jbody = newJObject()
+  add(jbody, "Name", %name)
+  add(jbody, "Driver", %driver)
+  add(jbody, "DriverOpts", driverOpts)
+  let reqBody = $jbody
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/volumes/create")
-  var headers = newStringTable({"Content-Type":"application/json"})
-  let (res, body) = await request(c.httpclient, httpPOST, url, headers, $jBody)
+  var headers = newStringTable({"Content-Type": "application/json", "Content-Length": $(len(reqBody))})
+  let (res, body) = await request(c.httpclient, httpPOST, url, headers, reqBody)
   case res.statusCode:
   of 201:
     try:
@@ -3498,13 +3522,13 @@ proc createNetwork*(c: AsyncDocker, name: string, driver = "bridge",
   ##     "Id": "22be93d5babb089c5aab8dbc369042fad48ff791584ca2da2100db837a1c7c30",
   ##     "Warning": ""
   ##   }
-  var jBody = newJObject()
-  add(jBody, "Name", %name)
-  add(jBody, "Driver", %driver)
+  var jbody = newJObject()
+  add(jbody, "Name", %name)
+  add(jbody, "Driver", %driver)
   var jOptions = newJObject()
   for i in options:
     add(jOptions, i.key, %($i.value))
-  add(jBody, "Options", jOptions)
+  add(jbody, "Options", jOptions)
   var JIPAM = newJObject()
   add(JIPAM, "Driver", %ipamDriver)
   add(JIPAM, "Config", newJArray())
@@ -3514,12 +3538,13 @@ proc createNetwork*(c: AsyncDocker, name: string, driver = "bridge",
     add(j, "Gateway", %i.gateway)
     add(j, "Subnet", %i.subnet)
     add(JIPAM["Config"], j)
-  add(jBody, "IPAM", JIPAM)
-  # add(jBody, "CheckDuplicate", %checkDuplicate) TODO: is this support?
+  add(jbody, "IPAM", JIPAM)
+  # add(jbody, "CheckDuplicate", %checkDuplicate) TODO: is this support?
+  let reqBody = $jbody
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/networks/create")
-  let headers = newStringTable({"Content-Type":"application/json"})
-  let (res, body) = await request(c.httpclient, httpPOST, url, headers, $jBody)
+  let headers = newStringTable({"Content-Type": "application/json", "Content-Length": $(len(reqBody))})
+  let (res, body) = await request(c.httpclient, httpPOST, url, headers, reqBody)
   case res.statusCode:
   of 201:
     try:
@@ -3546,17 +3571,18 @@ proc connect*(c: AsyncDocker; name, container: string;
   ## ``FutureError`` represents an exception, it may be ``NotFoundError`` or `DockerError`.
   ##
   ## Docs: https://docs.docker.com/engine/reference/api/docker_remote_api_v1.23/#connect-a-container-to-a-network
-  var jBody = newJObject()
-  add(jBody, "Container", %container)
+  var jbody = newJObject()
+  add(jbody, "Container", %container)
   var jEndpointConfig = newJObject()
   add(jEndpointConfig, "IPAMConfig", newJObject())
   add(jEndpointConfig["IPAMConfig"], "IPv4Address", %iPv4Address)
   add(jEndpointConfig["IPAMConfig"], "IPv6Address", %iPv6Address)
-  add(jBody, "EndpointConfig", jEndpointConfig)
+  add(jbody, "EndpointConfig", jEndpointConfig)
+  let reqBody = $jbody
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/networks/" & name & "/connect")
-  let headers = newStringTable({"Content-Type":"application/json"})
-  let (res, body) = await request(c.httpclient, httpPOST, url, headers, $jBody) 
+  let headers = newStringTable({"Content-Type": "application/json", "Content-Length": $(len(reqBody))})
+  let (res, body) = await request(c.httpclient, httpPOST, url, headers, reqBody) 
   case res.statusCode:
   of 200:
     discard
@@ -3578,13 +3604,14 @@ proc disconnect*(c: AsyncDocker; name, container: string; force = false) {.async
   ## * ``name`` - The new network’s name or id.
   ## * ``container`` - The container-id/name to be connected to the network.
   ## * ``Force`` - Force the container to disconnect from a network.
-  var jBody = newJObject()
-  add(jBody, "Container", %container)
-  add(jBody, "Force", %force)
+  var jbody = newJObject()
+  add(jbody, "Container", %container)
+  add(jbody, "Force", %force)
+  let reqBody = $jbody
   let url = parseUri(c.scheme, c.hostname, c.port, 
                      "/networks/" & name & "/disconnect")
-  let headers = newStringTable({"Content-Type":"application/json"})
-  let (res, body) = await request(c.httpclient, httpPOST, url, headers, $jBody)
+  let headers = newStringTable({"Content-Type": "application/json", "Content-Length": $(len(reqBody))})
+  let (res, body) = await request(c.httpclient, httpPOST, url, headers, reqBody)
   case res.statusCode:
   of 200:
     discard
