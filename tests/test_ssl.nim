@@ -1,12 +1,11 @@
 import asyncdispatch, ../asyncdocker, json, os
 
 const 
-  hostname = "192.168.0.114"
+  hostname = "127.0.0.1"
   port = Port(2376)
-  certs = "/home/king/Doing/rock/cloudagent/profile/robot/certs"
-  ca = joinPath(certs, "ca.pem")
-  key = joinPath(certs, "key.pem")
-  cert = joinPath(certs, "cert.pem")
+  ca = joinPath(getHomeDir(), ".docker", "ca.pem")
+  key = joinPath(getHomeDir(), ".docker", "key.pem")
+  cert = joinPath(getHomeDir(), ".docker", "cert.pem")
 
 proc main() {.async.} =
   var docker = newAsyncDocker(hostname, port, ca, key, cert)
