@@ -340,7 +340,7 @@ when defined(ssl):
     result.scheme = "https"
     var ctx = newContext(protTLSv1, verifyMode, cert, key) 
     if verifyMode == CVerifyPeer and 
-       SSLCTXLoadVerifyLocations(SslCtx(ctx), cacert, nil) != 1:
+       SSLCTXLoadVerifyLocations(SslCtx(ctx.context), cacert, nil) != 1:
       raise newException(SSLError, "invalid ca certificate")
     result.httpclient = newAsyncHttpClient(userAgent, ctx)
 else:
