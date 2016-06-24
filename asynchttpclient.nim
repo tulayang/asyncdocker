@@ -86,12 +86,12 @@ when not defined(ssl):
   type SSLContext = ref object
   let defaultSSLContext: SSLContext = nil
 else:
-  let defaultSSLContext = newContext(verifyMode = CVerifyNone)
+  let defaultSSLContext: SSLContext = nil
 
 const userAgent* = "Nim async client/0.0.1 (0.13.0)"
 
 proc newAsyncHttpClient*(userAgent = userAgent, 
-                         sslContext = defaultSslContext): AsyncHttpClient =
+                         sslContext = defaultSSLContext): AsyncHttpClient =
   ## Creates a new AsyncHttpClient instance.
   new(result)
   result.connected = false
