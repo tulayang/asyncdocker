@@ -370,8 +370,10 @@ proc add(x: var JsonNode, key: string, list: seq[tuple[key, value: string]]) =
 
 proc parseVnd(chunk: string): tuple[vnd: VndKind, data: string] = 
   let buff = chunk[0..7]
-  let size = ord(buff[4]) * int(pow(2,24)) + ord(buff[5]) * int(pow(2,16)) +
-             ord(buff[6]) * int(pow(2,8)) + ord(buff[7])
+  let size = ord(buff[4]) * int(pow(2.float64,24.float64)) + 
+             ord(buff[5]) * int(pow(2.float64,16.float64)) +
+             ord(buff[6]) * int(pow(2.float64,8.float64)) + 
+             ord(buff[7])
   let vnd = ord(buff[0])
   result.vnd = 
     if vnd == 0: vndStdin
